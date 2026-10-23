@@ -1,0 +1,25 @@
+[package]
+name = "gta-advance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+default-run = "gta-advance"
+
+[workspace]
+resolver = "2"
+members = ["tools/aot", "vendor/armv4t", "vendor/gba-core", "vendor/recomp-core"]
+default-members = [".", "tools/aot"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+gba-core = { path = "vendor/gba-core" }
+libloading = "0.8"
+sdl2 = { version = "0.38.0", features = ["bundled", "static-link"], optional = true }
+
+[features]
+default = ["desktop"]
+desktop = ["dep:sdl2"]

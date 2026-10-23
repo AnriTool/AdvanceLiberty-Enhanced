@@ -1,0 +1,9 @@
+[build]
+# MSBuild worker nodes hang in the restricted Windows build environment.
+# A single job also bounds SDL's CMake build, which finishes without old caches.
+jobs = 1
+
+# SDL2's bundled CMake project predates CMake 4. Keep its supported policy floor.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = { value = "3.5", force = false }
+MSBUILDDISABLENODEREUSE = { value = "1", force = false }

@@ -1,0 +1,8 @@
+/target/
+/artifacts/
+/data/
+/roms/*.gba
+/native/usa/*.dll
+/native/usa/*.c
+/native/usa/coverage/*.csv
+__pycache__/

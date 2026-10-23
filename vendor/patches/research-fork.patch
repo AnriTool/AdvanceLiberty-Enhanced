@@ -1,0 +1,144 @@
+diff --git a/crates/gba-core/src/apu.rs b/crates/gba-core/src/apu.rs
+index 818efb0..44ea076 100644
+--- a/crates/gba-core/src/apu.rs
++++ b/crates/gba-core/src/apu.rs
+@@ -126,7 +126,7 @@ impl Square {
+     }
+ }
+ 
+-#[derive(Default)]
++#[derive(Default, Clone)]
+ pub struct Apu {
+     sq: [Square; 2],
+     // Wave channel.
+diff --git a/crates/gba-core/src/backup.rs b/crates/gba-core/src/backup.rs
+index c254e2e..b4d1c8c 100644
+--- a/crates/gba-core/src/backup.rs
++++ b/crates/gba-core/src/backup.rs
+@@ -55,6 +55,7 @@ enum FlashState {
+     Bank,  // next write to 0x0E000000 selects the bank
+ }
+ 
++#[derive(Clone)]
+ pub struct Flash {
+     pub data: Vec<u8>,
+     state: FlashState,
+@@ -151,6 +152,7 @@ enum EepromMode {
+     Reading { addr: usize, bit: u32 },
+ }
+ 
++#[derive(Clone)]
+ pub struct Eeprom {
+     pub data: Vec<u8>,
+     /// Bits accumulated from writes since the last completed request.
+diff --git a/crates/gba-core/src/cpu.rs b/crates/gba-core/src/cpu.rs
+index 4aafcdb..62738e6 100644
+--- a/crates/gba-core/src/cpu.rs
++++ b/crates/gba-core/src/cpu.rs
+@@ -59,6 +59,7 @@ pub enum Exception {
+ }
+ 
+ #[repr(C)]
++#[derive(Clone, PartialEq, Eq)]
+ pub struct Cpu {
+     /// Active register view for the current mode. `regs[15]` holds the
+     /// *fetch* address of the next instruction between steps; during
+diff --git a/crates/gba-core/src/exec.rs b/crates/gba-core/src/exec.rs
+index 97e3091..1b7df1c 100644
+--- a/crates/gba-core/src/exec.rs
++++ b/crates/gba-core/src/exec.rs
+@@ -40,6 +40,7 @@ pub fn step_cached<B: Bus>(cpu: &mut Cpu, bus: &mut B, cache: &mut DecodeCache)
+ /// inputs — so a hit is always identical to a fresh decode, and
+ /// self-modifying code simply misses and re-decodes. The fetch itself
+ /// still goes through the bus on every step.
++#[derive(Clone)]
+ pub struct DecodeCache {
+     entries: Box<[CacheEntry]>,
+ }
+diff --git a/crates/gba-core/src/machine.rs b/crates/gba-core/src/machine.rs
+index f08e8fc..e59df5f 100644
+--- a/crates/gba-core/src/machine.rs
++++ b/crates/gba-core/src/machine.rs
+@@ -40,6 +40,11 @@ pub enum StepEvent {
+ }
+ 
+ impl Machine {
++    /// Isolated research branch. Includes banked CPU state, device latches and cache.
++    pub fn try_fork_for_research(&self) -> Result<Self, &'static str> {
++        Ok(Self { cpu: self.cpu.clone(), bus: self.bus.try_fork_for_research()?, decode_cache: self.decode_cache.clone() })
++    }
++
+     pub fn new(rom: Vec<u8>) -> Machine {
+         Machine {
+             cpu: Cpu::new(),
+diff --git a/crates/gba-core/src/mem.rs b/crates/gba-core/src/mem.rs
+index d0f9e23..c520161 100644
+--- a/crates/gba-core/src/mem.rs
++++ b/crates/gba-core/src/mem.rs
+@@ -235,6 +235,66 @@ pub const AUDIO_SAMPLE_CYCLES: u64 = 256;
+ pub const AUDIO_RATE_HZ: u32 = ((1u64 << 24) / AUDIO_SAMPLE_CYCLES) as u32;
+ 
+ impl MemMap {
++    /// Deep copy for offline replay. Reject unsupported host-time / HLE mixers.
++    pub fn try_fork_for_research(&self) -> Result<Self, &'static str> {
++        if self.rtc.is_some() || self.mp2k.is_some() || self.gax.is_some() || self.rdrv.is_some() {
++            return Err("Research fork does not support RTC or enhanced audio mixers");
++        }
++        Ok(Self {
++            bios: self.bios.clone(),
++            ewram: self.ewram.clone(),
++            iwram: self.iwram.clone(),
++            io: self.io.clone(),
++            palette: self.palette.clone(),
++            vram: self.vram.clone(),
++            oam: self.oam.clone(),
++            rom: self.rom.clone(),
++            sram: self.sram.clone(),
++            clock: self.clock.clone(),
++            reg_ie: self.reg_ie.clone(),
++            reg_if: self.reg_if.clone(),
++            ime: self.ime.clone(),
++            halted: self.halted.clone(),
++            intr_wait_armed: self.intr_wait_armed.clone(),
++            keys: self.keys.clone(),
++            keypad_prev: self.keypad_prev.clone(),
++            wave_shadow: self.wave_shadow.clone(),
++            timers: self.timers.clone(),
++            dma: self.dma.clone(),
++            vline_start: self.vline_start.clone(),
++            vphase: self.vphase.clone(),
++            frame_ready: self.frame_ready.clone(),
++            frames: self.frames.clone(),
++            framebuffer: self.framebuffer.clone(),
++            aff_ref: self.aff_ref.clone(),
++            aff_dirty: self.aff_dirty.clone(),
++            unhandled_swis: self.unhandled_swis.clone(),
++            bios_open: self.bios_open.clone(),
++            real_bios: self.real_bios.clone(),
++            pc_in_bios: self.pc_in_bios.clone(),
++            backup: self.backup.clone(),
++            flash: self.flash.clone(),
++            eeprom: self.eeprom.clone(),
++            rtc: None,
++            fifo: self.fifo.clone(),
++            fifo_sample: self.fifo_sample.clone(),
++            audio_buf: self.audio_buf.clone(),
++            tap_channels: self.tap_channels.clone(),
++            fifo_tap: self.fifo_tap.clone(),
++            psg_tap: self.psg_tap.clone(),
++            mp2k: None,
++            gax: None,
++            rdrv: None,
++            hle_tap: self.hle_tap.clone(),
++            fifo_underruns: self.fifo_underruns.clone(),
++            fifo_refills: self.fifo_refills.clone(),
++            fifo_pushes: self.fifo_pushes.clone(),
++            audio_cursor: self.audio_cursor.clone(),
++            apu: self.apu.clone(),
++            next_event: self.next_event.clone(),
++        })
++    }
++
+     pub fn new(rom: Vec<u8>) -> MemMap {
+         let backup = backup::detect(&rom);
+         let flash = match backup {
