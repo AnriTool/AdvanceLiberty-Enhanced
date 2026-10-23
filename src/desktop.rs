@@ -57,6 +57,7 @@ pub struct Desktop {
     focused: bool,
     next_frame: Instant,
     controls: crate::controls::Controls,
+    input_latch: crate::controls::InputLatch,
     controls_path: std::path::PathBuf,
     gamepad: Option<crate::gamepad::Gamepad>,
     title_updated: Instant,
@@ -85,6 +86,11 @@ impl Desktop {
     pub fn new(controls_path: std::path::PathBuf) -> Result<Self, String> {
         let sdl = sdl2::init()?;
         let controls = crate::controls::Controls::open(&controls_path)?;
+        eprintln!(
+            "Controls: {:?} ({})",
+            controls.mode(),
+            controls_path.display()
+        );
         let gamepad = match crate::gamepad::Gamepad::new(&sdl) {
             Ok(pad) => Some(pad),
             Err(e) => {
@@ -139,6 +145,7 @@ impl Desktop {
             renderer_available: false,
             gamepad,
             controls,
+            input_latch: Default::default(),
             controls_path,
             canvas,
             events,
@@ -202,6 +209,7 @@ impl Desktop {
         &mut self,
         settings: &mut crate::render_settings::Settings,
         renderer_available: bool,
+        context: crate::control_context::Context,
     ) -> Result<Option<u16>, String> {
         self.renderer_available = renderer_available;
         for event in self.events.poll_iter() {
@@ -221,6 +229,14 @@ impl Desktop {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => return Ok(None),
+                Event::KeyDown {
+                    keycode: Some(Keycode::F8),
+                    repeat: false,
+                    ..
+                } => match self.controls.toggle_mode() {
+                    Ok(()) => eprintln!("Controls: {:?}", self.controls.mode()),
+                    Err(error) => eprintln!("Controls unchanged: {error}"),
+                },
                 Event::KeyDown {
                     keycode: Some(Keycode::P),
                     repeat: false,
@@ -284,8 +300,15 @@ impl Desktop {
             return Ok(Some(0x3ff));
         }
         let keyboard = self.events.keyboard_state();
+        let mouse = self.events.mouse_state();
         Ok(Some(crate::gamepad::merge(
-            self.controls.buttons(|k| keyboard.is_scancode_pressed(k)),
+            self.input_latch
+                .sample(&self.controls, context, |binding| match binding {
+                    crate::controls::Binding::Key(key) => keyboard.is_scancode_pressed(key),
+                    crate::controls::Binding::MouseLeft => mouse.left(),
+                    crate::controls::Binding::MouseMiddle => mouse.middle(),
+                    crate::controls::Binding::MouseRight => mouse.right(),
+                }),
             self.gamepad.as_ref().map_or(0x3ff, |pad| pad.buttons()),
         )))
     }
@@ -439,7 +462,8 @@ mod tests {
                     repeat,
                 })
                 .unwrap();
-            ui.poll(&mut settings, true).unwrap();
+            ui.poll(&mut settings, true, crate::control_context::Context::Menu)
+                .unwrap();
             assert_eq!(settings.renderer, renderer);
             assert_eq!(settings.textures, mapping);
             let preview = (renderer == Renderer::Enhanced).then_some(enhanced.as_slice());
@@ -453,6 +477,55 @@ mod tests {
             assert!(pixels.chunks_exact(3).all(|p| p == expected));
         }
         assert_eq!(textures.allocations, 2);
+        for (repeat, expected) in [
+            (false, crate::controls::Mode::Classic),
+            (true, crate::controls::Mode::Classic),
+            (false, crate::controls::Mode::Enhanced),
+        ] {
+            events
+                .push_event(Event::KeyDown {
+                    timestamp: 0,
+                    window_id: ui.canvas.window().id(),
+                    keycode: Some(Keycode::F8),
+                    scancode: Some(Scancode::F8),
+                    keymod: sdl2::keyboard::Mod::NOMOD,
+                    repeat,
+                })
+                .unwrap();
+            ui.poll(
+                &mut settings,
+                true,
+                crate::control_context::Context::Vehicle,
+            )
+            .unwrap();
+            assert_eq!(ui.controls.mode(), expected);
+            assert_eq!(settings.renderer, Renderer::Original);
+        }
+        std::fs::write(
+            &ui.controls_path,
+            crate::controls::Controls::default_file().replace("Jump = Space", "Jump = C"),
+        )
+        .unwrap();
+        let reload = || {
+            events.push_event(Event::KeyDown {
+                timestamp: 0,
+                window_id: ui.canvas.window().id(),
+                keycode: Some(Keycode::F5),
+                scancode: Some(Scancode::F5),
+                keymod: sdl2::keyboard::Mod::NOMOD,
+                repeat: false,
+            })
+        };
+        // Keep the event independent of ui's mutable poll borrow.
+        reload().unwrap();
+        ui.poll(&mut settings, true, crate::control_context::Context::OnFoot)
+            .unwrap();
+        assert_eq!(
+            ui.controls
+                .contextual_buttons(crate::control_context::Context::OnFoot, |k| k
+                    == Scancode::C),
+            0x3fc
+        );
         ui.fps_started = Instant::now() - Duration::from_secs(1);
         ui.fps_frames = 58;
         ui.present(&source, None, &mut textures).unwrap();

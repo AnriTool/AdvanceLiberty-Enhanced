@@ -42,7 +42,11 @@ pub enum StepEvent {
 impl Machine {
     /// Isolated research branch. Includes banked CPU state, device latches and cache.
     pub fn try_fork_for_research(&self) -> Result<Self, &'static str> {
-        Ok(Self { cpu: self.cpu.clone(), bus: self.bus.try_fork_for_research()?, decode_cache: self.decode_cache.clone() })
+        Ok(Self {
+            cpu: self.cpu.clone(),
+            bus: self.bus.try_fork_for_research()?,
+            decode_cache: self.decode_cache.clone(),
+        })
     }
 
     pub fn new(rom: Vec<u8>) -> Machine {

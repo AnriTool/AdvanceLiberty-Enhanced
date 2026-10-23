@@ -16,6 +16,7 @@ mod building_projection;
 mod camera_preview;
 mod camera_trace;
 mod color_effects;
+mod control_context;
 #[cfg(feature = "desktop")]
 mod controls;
 #[cfg(any(feature = "desktop", test))]
@@ -181,6 +182,19 @@ fn coverage(native_dispatches: u64, misses: u64, rejected: u64) -> coverage::Cov
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let mut control_trace = if let Some(i) = args.iter().position(|s| s == "--control-state") {
+        if i + 1 >= args.len() {
+            return Err("--control-state requires NEW_FILE.csv".into());
+        }
+        let path = args.remove(i + 1);
+        args.remove(i);
+        use std::io::Write;
+        let mut trace = std::io::BufWriter::new(fs::File::create_new(path)?);
+        writeln!(trace, "frame,context,actor,display,gate")?;
+        Some(trace)
+    } else {
+        None
+    };
     let mut render_settings = render_settings::Settings::default();
     if let Some(i) = args.iter().position(|s| s == "--original-renderer") {
         args.remove(i);
@@ -548,9 +562,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let before = m.bus.frames;
         let i = keys.partition_point(|&(f, _)| f <= before);
         m.bus.keys = if i == 0 { 0x3ff } else { keys[i - 1].1 };
+        let control_context = control_context::detect(&m.bus);
+        if let Some(trace) = control_trace.as_mut() {
+            use std::io::Write;
+            writeln!(
+                trace,
+                "{before},{control_context:?},{:08x},{:04x},{:02x}",
+                u32::from_le_bytes(m.bus.ewram[0xf10..0xf14].try_into().unwrap()),
+                u16::from_le_bytes(m.bus.io[..2].try_into().unwrap()),
+                m.bus.ewram[0x494]
+            )?;
+        }
         #[cfg(feature = "desktop")]
         if let Some(ui) = desktop.as_mut() {
-            let Some(keys) = ui.poll(&mut render_settings, preview_enabled)? else {
+            let Some(keys) = ui.poll(&mut render_settings, preview_enabled, control_context)?
+            else {
                 break;
             };
             if args[1] == "-" {
