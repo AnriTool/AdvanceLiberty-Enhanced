@@ -738,13 +738,14 @@ impl Preview {
             if let Some(f) = self.sprite_presented.as_mut() {
                 objects.trace_anchors(bus.frames, shift, f);
             }
-            let image = objects.compose_camera(
+            let image = objects.compose_camera_hud(
                 &scene.graphics,
                 &layer,
                 &scene.graphics.palette,
                 shift,
                 3,
                 zoom,
+                settings.hud,
             );
             compose_ns = compose_start.elapsed().as_nanos();
             Ok::<_, String>((image, alpha < 1.0, reset))

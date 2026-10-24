@@ -27,6 +27,7 @@ mod frame_capture;
 #[cfg(feature = "desktop")]
 mod gamepad;
 mod ground_projection;
+mod hud_layout;
 mod native_audit;
 mod native_host;
 mod object_projection;
@@ -539,6 +540,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "desktop")]
     if let Some(ui) = desktop.as_ref() {
         let saved = ui.initial_render_settings();
+        render_settings.hud = saved.hud;
         if !override_renderer {
             render_settings.renderer = saved.renderer;
         }

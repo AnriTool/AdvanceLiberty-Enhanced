@@ -789,6 +789,110 @@ fn benchmark_captured_composition() {
         start.elapsed().as_secs_f64() * 1000.0
     );
 }
+#[cfg(test)]
+#[test]
+#[ignore = "manual visual check of captured gameplay HUD; ADVANCE_HUD_SCENES and ADVANCE_HUD_OUTPUT"]
+fn hud_captured_composition() {
+    let directory = std::path::PathBuf::from(std::env::var("ADVANCE_HUD_SCENES").unwrap());
+    let output = std::path::PathBuf::from(std::env::var("ADVANCE_HUD_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    for stem in [
+        "001675", "001850", "002100", "002600", "002910", "002950", "003450",
+    ] {
+        let mut source = MemMap::new(Vec::new());
+        for (ext, target) in [
+            ("io", &mut source.io),
+            ("iwram", &mut source.iwram),
+            ("ewram", &mut source.ewram),
+            ("vram", &mut source.vram),
+            ("palette", &mut source.palette),
+            ("oam", &mut source.oam),
+        ] {
+            target
+                .copy_from_slice(&std::fs::read(directory.join(format!("{stem}.{ext}"))).unwrap());
+        }
+        let sprites = (0..128)
+            .filter_map(|slot| Sprite::read(&source, slot).unwrap())
+            .map(|mut s| {
+                if s.priority != 0 {
+                    s.slope = [1.0; 2];
+                }
+                s
+            })
+            .collect();
+        let snapshot = Snapshot::new(sprites, &source);
+        let a = raw_layers(&source, 0x100, 0);
+        let b = raw_layers(&source, 0x100, 0x7fff);
+        let base: Vec<u8> = a
+            .iter()
+            .zip(&b)
+            .map(|(&a, &b)| {
+                if a != b {
+                    0
+                } else {
+                    (1..256)
+                        .find(|i| half(&source.palette, i * 2) & 0x7fff == a)
+                        .expect("Opaque BG0 palette index") as u8
+                }
+            })
+            .collect();
+        let building: Vec<_> = (0..720 * 480)
+            .map(|i| base[(i / 720 / 3) * 240 + (i % 720 / 3)])
+            .collect();
+        let unmodified = (source.io.clone(), source.vram.clone(), source.oam.clone());
+        for (name, hud) in [
+            ("100", crate::hud_layout::Settings::default()),
+            (
+                "75",
+                crate::hud_layout::Settings {
+                    radar: crate::hud_layout::Size::Medium,
+                    status: crate::hud_layout::Size::Medium,
+                    messages: crate::hud_layout::Size::Medium,
+                },
+            ),
+            (
+                "50",
+                crate::hud_layout::Settings {
+                    radar: crate::hud_layout::Size::Half,
+                    status: crate::hud_layout::Size::Half,
+                    messages: crate::hud_layout::Size::Half,
+                },
+            ),
+        ] {
+            let start = std::time::Instant::now();
+            let image = snapshot.compose_camera_hud(
+                &source,
+                &building,
+                &source.palette,
+                [0, 0],
+                3,
+                1.0,
+                hud,
+            );
+            println!(
+                "hud_compose {stem} {name}% ms={:.3}",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+            crate::scene_replay::ppm(&output.join(format!("{stem}-{name}.ppm")), &image, 720, 480)
+                .unwrap();
+            // HUD changes must leave the center of the world bit-identical.
+            if name != "100" {
+                let original =
+                    snapshot.compose_camera(&source, &building, &source.palette, [0, 0], 3, 1.0);
+                for y in 192..360 {
+                    for x in 192..528 {
+                        assert_eq!(
+                            image[y * 720 + x],
+                            original[y * 720 + x],
+                            "world changed {stem} {name} at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!((source.io, source.vram, source.oam), unmodified);
+    }
+}
 impl Snapshot {
     pub fn use_hud_from(&mut self, latest: &Self) {
         self.hud = latest.hud.clone();
@@ -1068,7 +1172,48 @@ impl Snapshot {
         scale: usize,
         zoom: f64,
     ) -> Vec<u16> {
+        self.compose_camera_hud(
+            source,
+            building,
+            palette,
+            delta,
+            scale,
+            zoom,
+            Default::default(),
+        )
+    }
+    pub fn compose_camera_hud(
+        &self,
+        source: &MemMap,
+        building: &[u8],
+        palette: &[u8],
+        delta: [i32; 2],
+        scale: usize,
+        zoom: f64,
+        hud_settings: crate::hud_layout::Settings,
+    ) -> Vec<u16> {
         use crate::color_effects::{Effects, Pixel};
+        // The USA gameplay HUD has a screen-fixed 32x32 weapon OBJ at (200,8).
+        // Without that marker, BG1 may be a dialogue or full-screen panel:
+        // preserve its layout rather than cutting it into gameplay HUD regions.
+        let hud_settings = if self.sprites.iter().any(|s| {
+            s.priority == 0
+                && s.slope == [0.0; 2]
+                && s.x == 200
+                && s.y == 8
+                && s.width == 32
+                && s.height == 32
+        }) {
+            hud_settings
+        } else {
+            Default::default()
+        };
+        let layout = (hud_settings != Default::default())
+            .then(|| crate::hud_layout::Layout::new(hud_settings, scale));
+        let hud_pixel = |x: usize, y: usize| match &layout {
+            Some(layout) => layout.pixel(&self.hud, x, y),
+            None => self.hud[y / scale * 240 + x / scale],
+        };
         let width = 240 * scale;
         let height = 160 * scale;
         let len = width * height;
@@ -1083,22 +1228,35 @@ impl Snapshot {
         order.sort_by_key(|s| std::cmp::Reverse((s.priority, s.slot)));
         if control & 0x1000 != 0 {
             for s in order {
-                let left = s.x as f64 + s.correction[0] - s.slope[0] * delta[0] as f64 / 65536.0;
-                let top = s.y as f64 + s.correction[1] - s.slope[1] * delta[1] as f64 / 65536.0;
+                let position = [
+                    s.x as f64 + s.correction[0] - s.slope[0] * delta[0] as f64 / 65536.0,
+                    s.y as f64 + s.correction[1] - s.slope[1] * delta[1] as f64 / 65536.0,
+                ];
+                let (position, factor) = if s.slope == [0.0; 2] && s.priority == 0 {
+                    crate::hud_layout::sprite(
+                        hud_settings,
+                        position,
+                        [s.width as f64 * s.zoom, s.height as f64 * s.zoom],
+                    )
+                } else {
+                    (position, 1.0)
+                };
+                let [left, top] = position;
+                let sprite_zoom = s.zoom * factor;
                 let bound =
                     |v: f64, n: usize| (v * scale as f64).ceil().clamp(0.0, n as f64) as usize;
                 let x_start = bound(left, width);
-                let x_end = bound(left + s.width as f64 * s.zoom, width);
+                let x_end = bound(left + s.width as f64 * sprite_zoom, width);
                 let y_start = bound(top, height);
-                let y_end = bound(top + s.height as f64 * s.zoom, height);
+                let y_end = bound(top + s.height as f64 * sprite_zoom, height);
                 if x_start == x_end || y_start == y_end {
                     continue;
                 }
                 let local_x: Vec<_> = (x_start..x_end)
-                    .map(|x| (x as f64 / scale as f64 - left) / s.zoom)
+                    .map(|x| (x as f64 / scale as f64 - left) / sprite_zoom)
                     .collect();
                 for y in y_start..y_end {
-                    let local_y = (y as f64 / scale as f64 - top) / s.zoom;
+                    let local_y = (y as f64 / scale as f64 - top) / sprite_zoom;
                     for (offset, &local_x) in local_x.iter().enumerate() {
                         let x = x_start + offset;
                         if let Some(color) = s.sample_local([local_x, local_y], true) {
@@ -1164,7 +1322,7 @@ impl Snapshot {
                         );
                     }
                     if control & 0x200 != 0 && mask & 2 != 0 && priorities[1] * 8 + 2 < front.1 {
-                        if let Some(color) = self.hud[y / scale * 240 + x / scale] {
+                        if let Some(color) = hud_pixel(x, y) {
                             front = (color, priorities[1] * 8 + 2);
                         }
                     }
@@ -1203,7 +1361,7 @@ impl Snapshot {
                     );
                 }
                 if control & 0x200 != 0 && mask & 2 != 0 {
-                    if let Some(color) = self.hud[y / scale * 240 + x / scale] {
+                    if let Some(color) = hud_pixel(x, y) {
                         insert(
                             Pixel {
                                 color,
@@ -1342,6 +1500,26 @@ pub(crate) fn raw_layers(source: &MemMap, layers: u16, backdrop: u16) -> Vec<u16
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn panels_without_gameplay_hud_marker_keep_original_layout() {
+        let mut source = MemMap::new(Vec::new());
+        source.io[..2].copy_from_slice(&0x0201u16.to_le_bytes());
+        let snapshot = Snapshot {
+            sprites: Vec::new(),
+            hud: Arc::new(vec![Some(0x1234); 38400]),
+        };
+        let layer = vec![0; 38400];
+        let original = snapshot.compose_camera(&source, &layer, &source.palette, [0, 0], 1, 1.0);
+        let small = crate::hud_layout::Settings {
+            radar: crate::hud_layout::Size::Half,
+            status: crate::hud_layout::Size::Half,
+            messages: crate::hud_layout::Size::Half,
+        };
+        let scaled =
+            snapshot.compose_camera_hud(&source, &layer, &source.palette, [0, 0], 1, 1.0, small);
+        assert_eq!(scaled, original);
+        assert!(scaled.iter().all(|p| *p == 0x1234));
+    }
     #[test]
     fn direct_hud_matches_two_ppu_passes_for_tile_formats_flips_scroll_and_sizes() {
         let mut source = MemMap::new(Vec::new());

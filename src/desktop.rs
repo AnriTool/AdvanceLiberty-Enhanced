@@ -625,7 +625,16 @@ mod tests {
         for _ in 0..3 {
             send(&mut ui, &mut settings, Keycode::Down);
         }
-        // A failed save leaves the menu open and active settings untouched.
+        send(&mut ui, &mut settings, Keycode::Return); // HUD submenu
+        send(&mut ui, &mut settings, Keycode::Left); // all: 100 -> 85
+        send(&mut ui, &mut settings, Keycode::Down); // radar
+        send(&mut ui, &mut settings, Keycode::Left); // radar: 85 -> 75
+        ui.present_paused(&mut textures).unwrap();
+        capture(&ui, "hud-menu.ppm");
+        assert_eq!(settings.hud, crate::hud_layout::Settings::default()); // still a draft
+        send(&mut ui, &mut settings, Keycode::Escape); // root HUD row 7
+        send(&mut ui, &mut settings, Keycode::Down); // save
+                                                     // A failed save leaves the menu open and active settings untouched.
         ui.preferences_path = directory.join("missing/enhanced.cfg");
         send(&mut ui, &mut settings, Keycode::Return);
         assert!(ui.paused());
@@ -649,6 +658,8 @@ mod tests {
             crate::render_settings::Renderer::Original
         );
         assert_eq!(ui.controls.binding_text(1, 6), "C");
+        assert_eq!(settings.hud.radar, crate::hud_layout::Size::Medium);
+        assert_eq!(settings.hud.status, crate::hud_layout::Size::Large);
         // Restore original resolution after drawing the 720x480 menu.
         ui.present(&source, None, &mut textures).unwrap();
         assert_eq!(ui.canvas.logical_size(), (240, 160));
@@ -683,6 +694,14 @@ mod tests {
             crate::render_settings::Renderer::Original
         );
         assert_eq!(ui.controls.binding_text(1, 6), "C");
+        assert_eq!(
+            ui.initial_render_settings().hud.radar,
+            crate::hud_layout::Size::Medium
+        );
+        assert_eq!(
+            ui.initial_render_settings().hud.messages,
+            crate::hud_layout::Size::Large
+        );
         drop(ui);
         std::fs::remove_dir_all(directory).unwrap();
     }

@@ -15,6 +15,7 @@ pub enum TextureMapping {
 pub struct Settings {
     pub renderer: Renderer,
     pub textures: TextureMapping,
+    pub hud: crate::hud_layout::Settings,
 }
 impl Settings {
     pub fn toggle_renderer(&mut self) {

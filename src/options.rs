@@ -21,8 +21,9 @@ pub struct Preferences {
 impl Preferences {
     pub fn encode(self) -> String {
         format!(
-            "# Enhanced Options\nRenderer = {:?}\nTextures = {:?}\nFullscreen = {}\n",
-            self.render.renderer, self.render.textures, self.fullscreen
+            "# Enhanced Options\nRenderer = {:?}\nTextures = {:?}\nFullscreen = {}\nHudRadar = {}\nHudStatus = {}\nHudMessages = {}\n",
+            self.render.renderer, self.render.textures, self.fullscreen,
+            self.render.hud.radar.percent(),self.render.hud.status.percent(),self.render.hud.messages.percent()
         )
     }
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -45,6 +46,13 @@ impl Preferences {
                 ("Textures", "Affine") => p.render.textures = TextureMapping::Affine,
                 ("Fullscreen", "true") => p.fullscreen = true,
                 ("Fullscreen", "false") => p.fullscreen = false,
+                ("HudRadar", value) => p.render.hud.radar = crate::hud_layout::Size::parse(value)?,
+                ("HudStatus", value) => {
+                    p.render.hud.status = crate::hud_layout::Size::parse(value)?
+                }
+                ("HudMessages", value) => {
+                    p.render.hud.messages = crate::hud_layout::Size::parse(value)?
+                }
                 _ => return Err(format!("Invalid setting: {key} = {value}")),
             }
         }
@@ -137,6 +145,7 @@ pub struct Menu {
     pub controls: Controls,
     pub prefs: Preferences,
     section: Option<usize>,
+    hud_page: bool,
     row: usize,
     capture: Option<bool>, // false replaces, true adds an alternative
     pub message: String,
@@ -149,6 +158,7 @@ impl Menu {
             controls,
             prefs,
             section: None,
+            hud_page: false,
             row: 0,
             capture: None,
             message: String::new(),
@@ -159,8 +169,10 @@ impl Menu {
     fn count(&self) -> usize {
         if self.confirm_quit {
             2
+        } else if self.hud_page {
+            5
         } else {
-            self.section.map_or(10, |s| Controls::actions(s).len())
+            self.section.map_or(11, |s| Controls::actions(s).len())
         }
     }
     fn back(&mut self) -> Command {
@@ -168,7 +180,11 @@ impl Menu {
             self.message.clear();
         } else if self.confirm_quit {
             self.confirm_quit = false;
-            self.row = 9;
+            self.row = 10;
+        } else if self.hud_page {
+            self.hud_page = false;
+            self.row = 7;
+            self.message.clear();
         } else if let Some(s) = self.section.take() {
             self.row = s + 1;
             self.message.clear();
@@ -186,6 +202,10 @@ impl Menu {
                 self.back()
             };
         }
+        if self.hud_page {
+            self.prefs.render.hud.change(self.row, false);
+            return Command::None;
+        }
         if self.section.is_some() {
             self.capture = Some(false);
             return Command::None;
@@ -201,9 +221,13 @@ impl Menu {
             4 => self.prefs.render.toggle_renderer(),
             5 => self.prefs.render.toggle_textures(),
             6 => self.prefs.fullscreen = !self.prefs.fullscreen,
-            7 => return Command::Save,
-            8 => return Command::Close,
-            9 => {
+            7 => {
+                self.hud_page = true;
+                self.row = 0;
+            }
+            8 => return Command::Save,
+            9 => return Command::Close,
+            10 => {
                 self.confirm_quit = true;
                 self.row = 1;
             }
@@ -285,6 +309,12 @@ impl Menu {
             Some(Keycode::Down) => self.row = (self.row + 1) % self.count(),
             Some(Keycode::Escape) => return self.back(),
             Some(Keycode::Return | Keycode::KpEnter) => return self.activate(),
+            Some(Keycode::Left | Keycode::Right) if self.hud_page => {
+                self.prefs
+                    .render
+                    .hud
+                    .change(self.row, key == Some(Keycode::Left));
+            }
             Some(Keycode::Left | Keycode::Right)
                 if self.section.is_none() && matches!(self.row, 0 | 4 | 5 | 6) =>
             {
@@ -355,6 +385,8 @@ impl Menu {
         )?;
         let subtitle = if self.confirm_quit {
             "Quit game? Unsaved options will be discarded."
+        } else if self.hud_page {
+            "HUD SIZE / ENHANCED RENDERER"
         } else {
             match self.section {
                 Some(0) => "CLASSIC / GBA",
@@ -368,6 +400,19 @@ impl Menu {
             vec![
                 ("Quit game".into(), String::new()),
                 ("Back".into(), String::new()),
+            ]
+        } else if self.hud_page {
+            let hud = self.prefs.render.hud;
+            let percent = |s: crate::hud_layout::Size| format!("{}%", s.percent());
+            vec![
+                (
+                    "All elements".into(),
+                    hud.all().map_or("Custom".into(), percent),
+                ),
+                ("Radar and markers".into(), percent(hud.radar)),
+                ("Status and weapon".into(), percent(hud.status)),
+                ("Messages".into(), percent(hud.messages)),
+                ("Reset HUD sizes".into(), String::new()),
             ]
         } else if let Some(section) = self.section {
             Controls::actions(section)
@@ -401,6 +446,7 @@ impl Menu {
                         "Off".into()
                     },
                 ),
+                ("HUD size".into(), ">".into()),
                 ("Save and return".into(), String::new()),
                 ("Discard and return".into(), String::new()),
                 ("Quit game...".into(), String::new()),
@@ -429,13 +475,17 @@ impl Menu {
         }
         let hint = if self.capture.is_some() {
             "Press a key / mouse button. Esc: cancel capture"
+        } else if self.hud_page {
+            "Left / right: size   Enter: next   Esc: back"
         } else if self.section.is_some() {
             "Enter: replace  Ins: add  Del: clear  Esc: back"
         } else {
             "Arrows: select  Enter: change  Esc: discard"
         };
         text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
-        let message = if self.message.is_empty() && self.row == 5 && self.section.is_none() {
+        let message = if self.hud_page && self.message.is_empty() {
+            "Enhanced world view only. Original HUD stays at 100%."
+        } else if self.message.is_empty() && self.row == 5 && self.section.is_none() {
             "Affine: experimental PS1-style texture distortion."
         } else {
             &self.message
@@ -523,6 +573,7 @@ fn glyph(c: char) -> [u8; 7] {
         '+' => [0, 4, 4, 31, 4, 4, 0],
         '\'' => [4, 4, 8, 0, 0, 0, 0],
         '?' => [14, 17, 1, 2, 4, 0, 4],
+        '%' => [25, 26, 2, 4, 8, 11, 19],
         '_' => [0, 0, 0, 0, 0, 0, 31],
         ' ' => [0; 7],
         _ => [31, 17, 1, 2, 4, 0, 4],
@@ -594,6 +645,33 @@ mod tests {
         assert!(matches!(m.event(&key(Keycode::Escape)), Command::Close));
     }
     #[test]
+    fn hud_preferences_migrate_and_menu_reset_preserves_other_options() {
+        let old = Preferences::parse("Renderer = Original\nTextures = Affine\nFullscreen = true")
+            .unwrap();
+        assert_eq!(old.render.hud, Default::default());
+        let mut menu = Menu::new(Controls::parse(&Controls::default_file()).unwrap(), old);
+        menu.row = 7;
+        menu.event(&key(Keycode::Return));
+        assert!(menu.hud_page);
+        menu.event(&key(Keycode::Left));
+        assert_eq!(
+            menu.prefs.render.hud.all(),
+            Some(crate::hud_layout::Size::Large)
+        );
+        menu.row = 1;
+        menu.event(&key(Keycode::Left));
+        assert_eq!(menu.prefs.render.hud.all(), None);
+        assert_eq!(menu.prefs.render.hud.radar, crate::hud_layout::Size::Medium);
+        menu.row = 4;
+        menu.event(&key(Keycode::Return));
+        assert_eq!(menu.prefs, old);
+        menu.event(&key(Keycode::Escape));
+        assert!(!menu.hud_page);
+        assert_eq!(menu.row, 7);
+        assert!(Preferences::parse("HudRadar = 0").is_err());
+        assert!(Preferences::parse("HudStatus = 200").is_err());
+    }
+    #[test]
     fn persistence_roundtrip_and_backup() {
         let dir = std::env::temp_dir().join(format!("options-save-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -609,6 +687,10 @@ mod tests {
             render: Settings {
                 renderer: Renderer::Original,
                 textures: TextureMapping::Affine,
+                hud: crate::hud_layout::Settings {
+                    radar: crate::hud_layout::Size::Half,
+                    ..Default::default()
+                },
             },
             fullscreen: true,
         };
