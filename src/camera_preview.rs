@@ -89,6 +89,7 @@ struct Pending {
     rebuilding: bool,
 }
 struct Scene {
+    ground_world: Option<ground_projection::WorldGround>,
     materials: building_material::Capture,
     objects: object_projection::Snapshot,
     graphics: MemMap,
@@ -152,6 +153,9 @@ fn closest_supported_alpha(requested: f64, minimum: f64, supports: impl Fn(f64) 
     right
 }
 pub struct Preview {
+    wide: bool,
+    ground_rom: Option<std::sync::Arc<Vec<u8>>>,
+    material_bank: building_material::MaterialBank,
     motion_roots: object_projection::MotionRoots,
     pending: Option<Pending>,
     current: Option<Scene>,
@@ -164,6 +168,10 @@ pub struct Preview {
     epoch: u64,
     output: Option<PathBuf>,
     events: Option<std::fs::File>,
+    session_events: Option<std::fs::File>,
+    session_summary: Option<PathBuf>,
+    session_recovering: bool,
+    last_settings: Option<crate::render_settings::Settings>,
     last: Option<Vec<u16>>,
     pub accepted: u64,
     pub rejected: u64,
@@ -259,6 +267,9 @@ impl Preview {
             })
             .transpose()?;
         Ok(Self {
+            wide: false,
+            ground_rom: None,
+            material_bank: Default::default(),
             motion_roots: object_projection::MotionRoots::default(),
             pending: None,
             current: None,
@@ -271,6 +282,10 @@ impl Preview {
             epoch: 0,
             output,
             events,
+            session_events: None,
+            session_summary: None,
+            session_recovering: false,
+            last_settings: None,
             last: None,
             accepted: 0,
             rejected: 0,
@@ -294,7 +309,50 @@ impl Preview {
             camera_frames,
         })
     }
+    pub fn log_session(&mut self, directory: &std::path::Path) -> std::io::Result<()> {
+        let mut file = std::fs::File::create_new(directory.join("camera-events.csv"))?;
+        writeln!(file, "frame,event,reason")?;
+        self.session_events = Some(file);
+        self.session_summary = Some(directory.join("camera-summary.txt"));
+        Ok(())
+    }
+    fn discard_scene(&mut self) {
+        self.pending = None;
+        self.current = None;
+        self.previous = None;
+        self.history.clear();
+        self.presented_scene = None;
+        self.presentation_floor = 0.0;
+    }
     fn event(&mut self, frame: u64, event: &str, reason: &str) {
+        if let Some(f) = &mut self.session_events {
+            let label = match event {
+                "fallback" => {
+                    self.session_recovering = true;
+                    Some(event)
+                }
+                "scene" if self.session_recovering => {
+                    self.session_recovering = false;
+                    Some("recovered")
+                }
+                "menu" => {
+                    self.session_recovering = false;
+                    Some(event)
+                }
+                "settings" | "material_clamp" | "wide_object_failure" => Some(event),
+                _ => None,
+            };
+            if let Some(label) = label {
+                let _ = writeln!(
+                    f,
+                    "{frame},{label},{}",
+                    reason.replace([',', '\n', '\r'], " ")
+                );
+                if label == "fallback" {
+                    let _ = f.flush();
+                }
+            }
+        }
         if let Some(f) = &mut self.events {
             let _ = writeln!(
                 f,
@@ -304,12 +362,7 @@ impl Preview {
         }
     }
     fn reject(&mut self, frame: u64, reason: String) {
-        self.pending = None;
-        self.current = None;
-        self.previous = None;
-        self.history.clear();
-        self.presented_scene = None;
-        self.presentation_floor = 0.0;
+        self.discard_scene();
         self.rejected += 1;
         self.status = "Camera preview: original scene";
         self.event(frame, "fallback", &reason);
@@ -344,7 +397,11 @@ impl Preview {
                 self.event(m.bus.frames, "capture_replaced", &reason);
             }
             self.pending = Some(Pending {
-                observer: building_projection::Observer::default(),
+                observer: {
+                    let mut observer = building_projection::Observer::default();
+                    observer.set_wide(self.wide);
+                    observer
+                },
                 ground: ground_projection::Observer::default(),
                 frame: m.bus.frames,
                 camera: camera(&m.bus),
@@ -370,6 +427,9 @@ impl Preview {
                     return;
                 }
                 let validation_start = std::time::Instant::now();
+                for reason in p.observer.side_failures() {
+                    self.event(m.bus.frames, "wide_object_failure", reason);
+                }
                 let capture = p.observer.into_live(&m.bus);
                 self.validate_ns += validation_start.elapsed().as_nanos();
                 match capture {
@@ -394,7 +454,7 @@ impl Preview {
                                 "Guest reused building framebuffer",
                             );
                         }
-                        let mut restored = 0;
+                        let mut restored = self.material_bank.restore(&mut materials);
                         for old in self.current.iter() {
                             restored += materials.restore_edge_materials(
                                 &old.materials,
@@ -466,7 +526,24 @@ impl Preview {
                         graphics.palette.clone_from(&m.bus.palette);
                         graphics.oam.clone_from(&m.bus.oam);
                         self.graphics_ns += graphics_start.elapsed().as_nanos();
+                        let ground_world = if self.wide {
+                            let rom = self
+                                .ground_rom
+                                .get_or_insert_with(|| std::sync::Arc::new(m.bus.rom.clone()))
+                                .clone();
+                            ground_projection::WorldGround::capture(&m.bus, rom)
+                        } else {
+                            None
+                        };
+                        if materials.side_faces > 0 {
+                            self.event(
+                                m.bus.frames,
+                                "wide_geometry",
+                                &format!("added_faces={}", materials.side_faces),
+                            );
+                        }
                         let scene = Scene {
+                            ground_world,
                             captured_effects: m.bus.io[0x50..0x56].try_into().unwrap(),
                             materials,
                             objects,
@@ -545,6 +622,23 @@ impl Preview {
         bus: &MemMap,
         settings: crate::render_settings::Settings,
     ) -> Option<Vec<u16>> {
+        self.wide = settings.aspect == crate::viewport::Aspect::Wide;
+        if self.last_settings != Some(settings) {
+            self.event(bus.frames, "settings", &format!("{settings:?}"));
+            self.last_settings = Some(settings);
+        }
+        let display = u16::from_le_bytes(bus.io[..2].try_into().unwrap());
+        // The ordinary pause menu intentionally disables BG2 and OBJ. It is
+        // not a failed world capture, and no stale world should cover it.
+        if display & 0x9587 == 0x0101 {
+            if self.status != "Original menu" {
+                self.event(bus.frames, "menu", "guest menu display");
+            }
+            self.discard_scene();
+            self.status = "Original menu";
+            self.original += 1;
+            return None;
+        }
         let mut palette_animation = false;
         // Palette uploads need not redraw geometry or OAM. Re-decode colors
         // only when the displayed layout is unchanged; never pair a partial
@@ -654,9 +748,10 @@ impl Preview {
             });
             let mut reset = false;
             let geometry_start = std::time::Instant::now();
-            let layer = match scene.materials.live_layer_camera(
+            let viewport = crate::viewport::View::new(3, settings.aspect);
+            let layer = match scene.materials.live_layer_view(
                 [shift[0], shift[1], dz],
-                3,
+                viewport,
                 settings.textures,
             ) {
                 Ok(layer) => layer,
@@ -677,7 +772,7 @@ impl Preview {
                             ]
                         };
                         alpha = closest_supported_alpha(alpha, minimum, |a| {
-                            scene.materials.supports_camera(view(a), 3)
+                            scene.materials.supports_view(view(a), viewport)
                         });
                         let chosen = view(alpha);
                         shift = [chosen[0], chosen[1]];
@@ -688,9 +783,9 @@ impl Preview {
                         alpha = 1.0;
                     }
                     reset = true;
-                    scene.materials.live_layer_camera(
+                    scene.materials.live_layer_view(
                         [shift[0], shift[1], dz],
-                        3,
+                        viewport,
                         settings.textures,
                     )?
                 }
@@ -738,14 +833,15 @@ impl Preview {
             if let Some(f) = self.sprite_presented.as_mut() {
                 objects.trace_anchors(bus.frames, shift, f);
             }
-            let image = objects.compose_camera_hud(
+            let image = objects.compose_view(
                 &scene.graphics,
                 &layer,
                 &scene.graphics.palette,
                 shift,
-                3,
+                viewport,
                 zoom,
                 settings.hud,
+                scene.ground_world.as_ref(),
             );
             compose_ns = compose_start.elapsed().as_nanos();
             Ok::<_, String>((image, alpha < 1.0, reset))
@@ -814,18 +910,81 @@ impl Preview {
         eprintln!("camera_preview scenes={} rejected={} rendered={} original={} blended={} render_ms={:.3}",self.accepted,self.rejected,self.rendered,self.original,self.blended,self.render_ns as f64/1e6);
         if let Some(path) = &self.output {
             if let Some(image) = &self.last {
-                crate::scene_replay::ppm(&path.join("last-preview.ppm"), image, 720, 480)?;
+                crate::scene_replay::ppm(
+                    &path.join("last-preview.ppm"),
+                    image,
+                    image.len() / 480,
+                    480,
+                )?;
             }
             std::fs::write(path.join("summary.txt"),format!("accepted_scenes={}\nrejected_scenes={}\npreview_frames={}\noriginal_frames={}\nblended_frames={}\ntransition_resets={}\nmaterial_clamps={}\nrender_ms={}\nlast_fallback={}\n",self.accepted,self.rejected,self.rendered,self.original,self.blended,self.transition_resets,self.material_clamps,self.render_ns as f64/1e6,self.last_reason))?;
         }
         if let Some(f) = &mut self.events {
             f.flush()?;
         }
+        if let Some(f) = &mut self.session_events {
+            f.flush()?;
+        }
+        if let Some(path) = &self.session_summary {
+            std::fs::write(path,format!("accepted_scenes={}\nrejected_scenes={}\npreview_frames={}\noriginal_frames={}\nmaterial_clamps={}\nlast_fallback={}\n",self.accepted,self.rejected,self.rendered,self.original,self.material_clamps,self.last_reason))?;
+        }
         Ok(())
     }
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guest_pause_clears_scene_without_reporting_failure_but_forced_blank_still_times_out() {
+        let mut preview = super::Preview::new(None).unwrap();
+        let mut machine = gba_core::Machine::new(Vec::new());
+        preview.observe(&machine, super::ENTRY);
+        assert!(preview.pending.is_some());
+        machine.bus.io[..2].copy_from_slice(&0x0101u16.to_le_bytes());
+        machine.bus.frames = 200;
+        assert!(preview.frame(&machine.bus).is_none());
+        assert!(preview.pending.is_none());
+        assert_eq!(preview.rejected, 0);
+        assert_eq!(preview.status, "Original menu");
+        preview.observe(&machine, super::ENTRY);
+        machine.bus.io[..2].copy_from_slice(&0x17c1u16.to_le_bytes());
+        machine.bus.frames = 400;
+        assert!(preview.frame(&machine.bus).is_none());
+        assert_eq!(preview.rejected, 1);
+    }
+    #[test]
+    fn camera_session_log_filters_frame_noise_and_records_recovery() {
+        let directory = std::env::temp_dir().join(format!(
+            "advance-camera-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        {
+            let mut preview = super::Preview::new(None).unwrap();
+            preview.log_session(&directory).unwrap();
+            preview.event(1, "scene", "accepted");
+            preview.event(2, "upload_call", "ignored");
+            preview.reject(3, "missing, material\nroof".into());
+            preview.event(4, "scene", "accepted");
+            preview.event(5, "scene", "accepted");
+            preview.event(6, "menu", "guest menu display");
+            preview.finish().unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(directory.join("camera-events.csv")).unwrap(),
+            "frame,event,reason\n3,fallback,missing  material roof\n4,recovered,accepted\n6,menu,guest menu display\n");
+        assert!(
+            std::fs::read_to_string(directory.join("camera-summary.txt"))
+                .unwrap()
+                .contains("rejected_scenes=1")
+        );
+        std::fs::remove_file(directory.join("camera-events.csv")).unwrap();
+        std::fs::remove_file(directory.join("camera-summary.txt")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
     use super::*;
     #[test]
     fn missing_edge_clamps_to_nearest_valid_time_without_rewinding() {
@@ -860,6 +1019,7 @@ mod tests {
                 .live_snapshot(&graphics)
                 .unwrap();
             Scene {
+                ground_world: None,
                 captured_effects: [0; 6],
                 materials: Default::default(),
                 objects,
@@ -1034,6 +1194,7 @@ mod tests {
                 })
                 .unwrap();
             Scene {
+                ground_world: None,
                 captured_effects: [0; 6],
                 materials: building_material::Capture::default(),
                 objects,

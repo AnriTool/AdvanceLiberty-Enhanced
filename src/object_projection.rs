@@ -204,13 +204,23 @@ pub struct Observer {
     anchors: HashMap<u32, Anchor>,
     placements: HashMap<u32, Placement>,
     rows: Vec<String>,
+    pub wide: bool,
+    offscreen: Vec<Sprite>,
+    offscreen_failures: Vec<String>,
 }
 impl Observer {
     #[inline]
     pub fn interested(key: u32) -> bool {
         matches!(
             key,
-            0x08012771 | 0x08012897 | 0x080128a5 | 0x080140ab | 0x080145c3 | 0x08014a77
+            0x08012771
+                | 0x08012897
+                | 0x080128a5
+                | 0x080140ab
+                | 0x080145c3
+                | 0x08014a77
+                | 0x08014649
+                | 0x08014001
         )
     }
     pub fn live_snapshot(&self, source: &MemMap) -> Result<Snapshot, String> {
@@ -241,12 +251,17 @@ impl Observer {
                 continue;
             };
             sprite.node = nodes.get(slot).copied().unwrap_or(0);
+            if sprite.node != 0 {
+                sprite.depth = source.ewram[(sprite.node - 0x02000000) as usize + 6];
+            }
             if let Some(p) = self.placements.get(&sprite.node) {
                 if p.integer[0] & 511 != half(&source.oam, slot * 8 + 2) as i32 & 511
                     || p.integer[1] & 255 != half(&source.oam, slot * 8) as i32 & 255
                 {
                     return Err("World placement mismatch".into());
                 }
+                sprite.x = p.integer[0];
+                sprite.y = p.integer[1];
                 sprite.owner = p.owner;
                 sprite.correction = p.anchor.correction;
                 sprite.slope = p.anchor.slope;
@@ -258,16 +273,37 @@ impl Observer {
                     return Err("Screen placement mismatch".into());
                 }
                 sprite.owner = *owner;
+                if sprite.priority != 0 {
+                    sprite.x = p[0];
+                    sprite.y = p[1];
+                    sprite.slope = [0x60, 0x64].map(|o| {
+                        i32::from_le_bytes(source.iwram[o..o + 4].try_into().unwrap()) as f64
+                            / 65536.
+                    });
+                    sprite.world_screen = Some(p.map(|v| v as f64));
+                }
             } else if sprite.priority != 0 {
                 return Err("Unclassified world object".into());
             }
             sprite.hires = sprite.slope != [0.0; 2];
             sprites.push(sprite);
         }
+        for (i, extra) in self.offscreen.iter().enumerate() {
+            let mut extra = extra.clone();
+            let before = sprites
+                .iter()
+                .filter(|s| !s.host_only && s.priority == extra.priority)
+                .find(|s| s.depth > extra.depth)
+                .map(|s| s.slot)
+                .unwrap_or(nodes.len());
+            extra.order = before * 256 + i + 1;
+            sprites.push(extra);
+        }
         Ok(Snapshot::new(sprites, source))
     }
     pub fn observe(&mut self, m: &Machine, key: u32) -> Result<(), String> {
         if key == 0x08012771 {
+            self.offscreen.clear();
             self.anchors.clear();
             self.placements.clear();
             self.cached.clear();
@@ -324,6 +360,47 @@ impl Observer {
                 projected[1].1
             ));
         }
+        if key == 0x08014649 && self.wide {
+            let x = m.cpu.regs[9] as i32;
+            let y = m.cpu.regs[8] as i32;
+            let half_width = m.cpu.regs[1] as i32;
+            let half_height = m.cpu.regs[4] as i32 / 2;
+            // Only add objects rejected horizontally by GBA, inside the new sides.
+            if (x + half_width < 0 || x - half_width > 240)
+                && x + half_width >= -23
+                && x - half_width <= 263
+                && y + half_height >= 0
+                && y - half_height <= 160
+            {
+                match self.offscreen_sprite(m) {
+                    Ok(Some(sprite)) => self.offscreen.push(sprite),
+                    Ok(None) => {}
+                    Err(reason) => self
+                        .offscreen_failures
+                        .push(format!("owner={:08x}: {reason}", m.cpu.regs[6])),
+                }
+            }
+        }
+        if key == 0x08014001 && self.wide {
+            let x = m.cpu.regs[1] as i32;
+            let y = m.cpu.regs[2] as i32;
+            let w = m.cpu.regs[4] as i32;
+            let h = m.cpu.regs[6] as i32;
+            if (x + w < 0 || x - w > 240)
+                && x + w >= -23
+                && x - w <= 263
+                && y + h >= 0
+                && y - h <= 160
+            {
+                match self.side_sprite(m, true) {
+                    Ok(Some(sprite)) if sprite.priority != 0 => self.offscreen.push(sprite),
+                    Ok(_) => {}
+                    Err(reason) => self
+                        .offscreen_failures
+                        .push(format!("screen owner={:08x}: {reason}", m.cpu.regs[5])),
+                }
+            }
+        }
         // attr1 has been written; attr0 write at this PC follows immediately.
         if key == 0x08014a77 {
             let owner = m.cpu.regs[6];
@@ -341,6 +418,89 @@ impl Observer {
             );
         }
         Ok(())
+    }
+    pub fn side_failures(&self) -> &[String] {
+        &self.offscreen_failures
+    }
+    pub fn record_side_failure(&mut self, reason: String) {
+        self.offscreen_failures.push(reason);
+    }
+    fn offscreen_sprite(&self, m: &Machine) -> Result<Option<Sprite>, String> {
+        self.side_sprite(m, false)
+    }
+    fn side_sprite(&self, m: &Machine, screen: bool) -> Result<Option<Sprite>, String> {
+        let owner = m.cpu.regs[if screen { 5 } else { 6 }];
+        let anchor = if screen {
+            Anchor {
+                correction: [0.; 2],
+                slope: [0x60, 0x64].map(|o| {
+                    i32::from_le_bytes(m.bus.iwram[o..o + 4].try_into().unwrap()) as f64 / 65536.
+                }),
+                world_screen: [m.cpu.regs[1] as i32 as f64, m.cpu.regs[2] as i32 as f64],
+            }
+        } else {
+            let Some(anchor) = self.anchors.get(&owner) else {
+                return Ok(None);
+            };
+            *anchor
+        };
+        let mut fork = m.try_fork_for_research().map_err(str::to_string)?;
+        // Skip only the original rectangle rejection; preserve visibility flags,
+        // animation, allocation and all subsequent sprite placement operations.
+        let xy_screen = [m.cpu.regs[1] as i32, m.cpu.regs[2] as i32];
+        fork.cpu.regs[15] = if screen { 0x0801401a } else { 0x08014684 };
+        if screen {
+            fork.cpu.regs[3] = 0;
+        }
+        crate::scene_replay::presentation_span(
+            &mut fork,
+            if screen { 0x08014105 } else { 0x08014a79 },
+        )?;
+        let node = word(&fork, owner + 24)? as u32;
+        if node == 0 {
+            return Ok(None);
+        }
+        let attrs = bytes(&fork, node, 6)?.to_vec();
+        let depth = bytes(&fork, node + 6, 1)?[0];
+        let xy = if screen {
+            xy_screen
+        } else {
+            [fork.cpu.regs[9] as i32, fork.cpu.regs[8] as i32]
+        };
+        // Finish pending texture uploads only in this isolated presentation copy.
+        fork.cpu.regs[15] = 0x08012d44;
+        fork.cpu.regs[14] = 0x08000001;
+        crate::scene_replay::presentation_span(&mut fork, 0x08000001)?;
+        // Commit the OBJ palette queue; 08013354 uploads background palettes.
+        fork.cpu.regs[15] = 0x08013550;
+        fork.cpu.regs[14] = 0x08000001;
+        crate::scene_replay::presentation_span(&mut fork, 0x08000001)?;
+        fork.bus.oam[127 * 8..127 * 8 + 6].copy_from_slice(&attrs);
+        let a1 = u16::from_le_bytes(attrs[2..4].try_into().unwrap());
+        if attrs[1] & 1 != 0 {
+            let matrix = word(&fork, owner + 52)? as u32;
+            let data = bytes(&fork, matrix, 8)?.to_vec();
+            let group = ((a1 >> 9) & 31) as usize * 32;
+            for i in 0..4 {
+                fork.bus.oam[group + 6 + i * 8..group + 8 + i * 8]
+                    .copy_from_slice(&data[i * 2..i * 2 + 2]);
+            }
+        }
+        let Some(mut sprite) = Sprite::read(&fork.bus, 127)? else {
+            return Ok(None);
+        };
+        sprite.host_only = true;
+        sprite.depth = depth;
+        sprite.generation = 1;
+        sprite.node = owner;
+        sprite.owner = owner;
+        sprite.x = xy[0];
+        sprite.y = xy[1];
+        sprite.correction = anchor.correction;
+        sprite.slope = anchor.slope;
+        sprite.world_screen = Some(anchor.world_screen);
+        sprite.hires = true;
+        Ok(Some(sprite))
     }
     pub fn capture(
         &self,
@@ -548,6 +708,7 @@ impl Texture {
 #[derive(Clone)]
 struct Sprite {
     pixels: Arc<Vec<Option<u16>>>,
+    host_only: bool,
     node: u32,
     owner: u32,
     generation: u64,
@@ -558,6 +719,8 @@ struct Sprite {
     priority: u16,
     semi: bool,
     slot: usize,
+    order: usize,
+    depth: u8,
     correction: [f64; 2],
     slope: [f64; 2],
     world_screen: Option<[f64; 2]>,
@@ -664,6 +827,7 @@ impl Sprite {
         }
         Ok(Some(Self {
             pixels: Arc::new(pixels),
+            host_only: false,
             node: 0,
             owner: 0,
             generation: 0,
@@ -674,6 +838,8 @@ impl Sprite {
             priority: (a2 >> 10) & 3,
             semi: a0 & 0x400 != 0,
             slot,
+            order: (slot + 1) * 256,
+            depth: 0,
             correction: [0.0; 2],
             slope: [0.0; 2],
             world_screen: None,
@@ -902,13 +1068,19 @@ impl Snapshot {
             .sprites
             .iter()
             .map(|sprite| {
+                if sprite.host_only {
+                    return Ok(None);
+                }
                 Sprite::read(source, sprite.slot)?
+                    .map(Some)
                     .ok_or_else(|| "Palette refresh lost an existing OBJ".to_owned())
             })
             .collect::<Result<_, _>>()?;
         for (sprite, colors) in self.sprites.iter_mut().zip(decoded) {
-            sprite.pixels = colors.pixels;
-            sprite.texture = colors.texture;
+            if let Some(colors) = colors {
+                sprite.pixels = colors.pixels;
+                sprite.texture = colors.texture;
+            }
         }
         self.hud = Arc::new(hud_layer(source));
         Ok(())
@@ -984,7 +1156,9 @@ impl Snapshot {
     }
     pub fn stamp(&mut self, generations: &HashMap<u32, u64>) {
         for s in &mut self.sprites {
-            s.generation = generations.get(&s.node).copied().unwrap_or(0);
+            if !s.host_only {
+                s.generation = generations.get(&s.node).copied().unwrap_or(0);
+            }
         }
     }
     pub fn interpolate(&self, previous: &Self, alpha: f64, delta: [i32; 2]) -> Self {
@@ -994,10 +1168,12 @@ impl Snapshot {
                 continue;
             }
             let Some(old) = previous.sprites.iter().find(|p| {
-                p.node == s.node
-                    && p.owner == s.owner
-                    && p.generation == s.generation
+                p.owner == s.owner
                     && p.slope != [0.0; 2]
+                    && ((p.node == s.node && p.generation == s.generation)
+                        || ((p.host_only || s.host_only)
+                            && p.motion.is_some()
+                            && p.motion.map(|m| m.identity) == s.motion.map(|m| m.identity)))
             }) else {
                 continue;
             };
@@ -1139,7 +1315,7 @@ impl Snapshot {
             .iter()
             .filter_map(|s| {
                 s.sample(x, y, delta, continuous)
-                    .map(|p| (p, s.priority, s.slot))
+                    .map(|p| (p, s.priority, s.order))
             })
             .min_by_key(|p| (p.1, p.2))
     }
@@ -1192,40 +1368,61 @@ impl Snapshot {
         zoom: f64,
         hud_settings: crate::hud_layout::Settings,
     ) -> Vec<u16> {
+        self.compose_view(
+            source,
+            building,
+            palette,
+            delta,
+            crate::viewport::View::new(scale, Default::default()),
+            zoom,
+            hud_settings,
+            None,
+        )
+    }
+    pub fn compose_view(
+        &self,
+        source: &MemMap,
+        building: &[u8],
+        palette: &[u8],
+        delta: [i32; 2],
+        view: crate::viewport::View,
+        zoom: f64,
+        hud_settings: crate::hud_layout::Settings,
+        world: Option<&crate::ground_projection::WorldGround>,
+    ) -> Vec<u16> {
+        let scale = view.scale;
         use crate::color_effects::{Effects, Pixel};
         // The USA gameplay HUD has a screen-fixed 32x32 weapon OBJ at (200,8).
         // Without that marker, BG1 may be a dialogue or full-screen panel:
         // preserve its layout rather than cutting it into gameplay HUD regions.
-        let hud_settings = if self.sprites.iter().any(|s| {
+        let standard_hud = self.sprites.iter().any(|s| {
             s.priority == 0
                 && s.slope == [0.0; 2]
                 && s.x == 200
                 && s.y == 8
                 && s.width == 32
                 && s.height == 32
-        }) {
+        });
+        let hud_settings = if standard_hud {
             hud_settings
         } else {
             Default::default()
         };
-        let layout = (hud_settings != Default::default())
-            .then(|| crate::hud_layout::Layout::new(hud_settings, scale));
+        let layout = (hud_settings != Default::default() || view.padding != 0)
+            .then(|| crate::hud_layout::Layout::new_view(hud_settings, view, standard_hud));
         let hud_pixel = |x: usize, y: usize| match &layout {
             Some(layout) => layout.pixel(&self.hud, x, y),
             None => self.hud[y / scale * 240 + x / scale],
         };
-        let width = 240 * scale;
-        let height = 160 * scale;
+        let width = view.width;
+        let height = view.height;
         let len = width * height;
         let control = half(&source.io, 0);
-        let ground = if zoom == 1.0 {
-            crate::ground_projection::continuous_layer(source, scale, delta)
-        } else {
-            crate::ground_projection::continuous_layer_zoom(source, scale, delta, zoom)
-        };
+        let ground =
+            crate::ground_projection::continuous_layer_world(source, view, delta, zoom, world);
         let mut objects = vec![None; len];
         let mut order: Vec<_> = self.sprites.iter().collect();
-        order.sort_by_key(|s| std::cmp::Reverse((s.priority, s.slot)));
+        order.sort_by_key(|s| std::cmp::Reverse((s.priority, s.order)));
         if control & 0x1000 != 0 {
             for s in order {
                 let position = [
@@ -1241,19 +1438,34 @@ impl Snapshot {
                 } else {
                     (position, 1.0)
                 };
+                let edge = if standard_hud && s.slope == [0.0; 2] && s.priority == 0 {
+                    crate::hud_layout::edge_offset(
+                        [s.x as f64, s.y as f64],
+                        [s.width as f64, s.height as f64],
+                        view.offset(),
+                    )
+                } else {
+                    0.0
+                };
                 let [left, top] = position;
+                let x_offset = (view.padding as f64 + edge * scale as f64).round();
                 let sprite_zoom = s.zoom * factor;
                 let bound =
                     |v: f64, n: usize| (v * scale as f64).ceil().clamp(0.0, n as f64) as usize;
-                let x_start = bound(left, width);
-                let x_end = bound(left + s.width as f64 * sprite_zoom, width);
+                let x_bound = |v: f64| {
+                    (v * scale as f64 + x_offset)
+                        .ceil()
+                        .clamp(0.0, width as f64) as usize
+                };
+                let x_start = x_bound(left);
+                let x_end = x_bound(left + s.width as f64 * sprite_zoom);
                 let y_start = bound(top, height);
                 let y_end = bound(top + s.height as f64 * sprite_zoom, height);
                 if x_start == x_end || y_start == y_end {
                     continue;
                 }
                 let local_x: Vec<_> = (x_start..x_end)
-                    .map(|x| (x as f64 / scale as f64 - left) / sprite_zoom)
+                    .map(|x| ((x as f64 - x_offset) / scale as f64 - left) / sprite_zoom)
                     .collect();
                 for y in y_start..y_end {
                     let local_y = (y as f64 / scale as f64 - top) / sprite_zoom;
@@ -1297,7 +1509,7 @@ impl Snapshot {
                 }),
                 zoom,
             )
-            .prepare(scale);
+            .prepare_view(view);
         if effects.inactive(self.sprites.iter().any(|s| s.semi)) {
             // No second color can affect output. Resolve just the nearest
             // visible surface; avoid blend bookkeeping for every pixel.
@@ -1499,7 +1711,139 @@ pub(crate) fn raw_layers(source: &MemMap, layers: u16, backdrop: u16) -> Vec<u16
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_placement_keeps_positive_coordinates_beyond_gba_right_edge() {
+        let mut m = Machine::new(Vec::new());
+        m.bus.io[..2].copy_from_slice(&1u16.to_le_bytes());
+        for slot in 0..128 {
+            m.bus.oam[slot * 8 + 1] = 2;
+        }
+        m.bus.oam[..2].copy_from_slice(&60u16.to_le_bytes());
+        m.bus.oam[2..4].copy_from_slice(&248u16.to_le_bytes());
+        m.bus.oam[4..6].copy_from_slice(&(3u16 << 10).to_le_bytes());
+        let node = 0x0201cec0u32;
+        let offset = (node - 0x02000000) as usize;
+        m.bus.ewram[offset..offset + 6].copy_from_slice(&m.bus.oam[..6]);
+        m.bus.ewram[0x1d6c4..0x1d6c8].copy_from_slice(&node.to_le_bytes());
+        let mut observer = Observer::default();
+        observer.placements.insert(
+            node,
+            Placement {
+                owner: 0x02002550,
+                integer: [248, 60],
+                anchor: Anchor {
+                    correction: [0.25; 2],
+                    slope: [1.; 2],
+                    world_screen: [252., 64.],
+                },
+            },
+        );
+        let snapshot = observer.live_snapshot(&m.bus).unwrap();
+        assert_eq!(snapshot.sprites[0].x, 248);
+        assert_eq!(snapshot.sprites[0].y, 60);
+        assert_eq!(half(&m.bus.oam, 2), 248);
+        observer.placements.clear();
+        observer.cached.insert(node, (0x02002550, [248, 60]));
+        let prop = observer.live_snapshot(&m.bus).unwrap();
+        assert_eq!(prop.sprites[0].x, 248);
+        assert_eq!(prop.sprites[0].world_screen, Some([248., 60.]));
+    }
+    #[test]
+    fn palette_refresh_preserves_private_side_texture_when_live_slot_is_absent() {
+        let mut bus = MemMap::new(Vec::new());
+        bus.vram[0x10000..0x10020].fill(0x11);
+        bus.palette[514..516].copy_from_slice(&31u16.to_le_bytes());
+        let mut sprite = Sprite::read(&bus, 0).unwrap().unwrap();
+        sprite.host_only = true;
+        sprite.slot = 127;
+        let pixels = sprite.pixels.clone();
+        let mut snapshot = Snapshot::new(vec![sprite], &bus);
+        bus.oam[127 * 8 + 1] = 2;
+        bus.palette[514..516].copy_from_slice(&0x7c00u16.to_le_bytes());
+        snapshot.refresh_palette(&bus).unwrap();
+        assert!(Arc::ptr_eq(&snapshot.sprites[0].pixels, &pixels));
+        assert_eq!(pixels[0], Some(31));
+    }
+    #[test]
+    fn side_sprite_and_oam_sprite_interpolate_only_with_same_checked_actor_root() {
+        let bus = MemMap::new(Vec::new());
+        let mut a = Sprite::read(&bus, 0).unwrap().unwrap();
+        a.node = 0x0201cec0;
+        a.owner = 0x02002550;
+        a.generation = 7;
+        a.slope = [1.; 2];
+        a.motion = Some(MotionAnchor {
+            identity: [0x02004000, 0x02004100],
+            screen: [10., 20.],
+            vehicle: false,
+        });
+        let previous = Snapshot::new(vec![a.clone()], &bus);
+        a.node = a.owner;
+        a.host_only = true;
+        a.generation = 1;
+        a.x = 4;
+        a.motion.as_mut().unwrap().screen[0] = 14.;
+        let current = Snapshot::new(vec![a.clone()], &bus);
+        let result = current.interpolate(&previous, 0.5, [0; 2]);
+        assert_eq!(result.sprites[0].correction, [-2., 0.]);
+        a.motion.as_mut().unwrap().identity[1] += 4;
+        let reused = Snapshot::new(vec![a], &bus).interpolate(&previous, 0.5, [0; 2]);
+        assert_eq!(reused.sprites[0].correction, [0.; 2]);
+    }
+
     use super::*;
+    #[test]
+    fn wide_world_sprites_keep_scale_and_exact_center_pixels() {
+        let mut source = MemMap::new(Vec::new());
+        source.io[..2].copy_from_slice(&0x1001u16.to_le_bytes());
+        source.palette[0..2].copy_from_slice(&0x7c00u16.to_le_bytes());
+        source.palette[514..516].copy_from_slice(&0x03e0u16.to_le_bytes());
+        source.vram[0x10000..0x10020].fill(0x11);
+        source.oam[0..2].copy_from_slice(&80u16.to_le_bytes());
+        source.oam[2..4].copy_from_slice(&100u16.to_le_bytes());
+        source.oam[4..6].copy_from_slice(&0x0c00u16.to_le_bytes());
+        let mut sprite = Sprite::read(&source, 0).unwrap().unwrap();
+        sprite.slope = [1.0; 2];
+        sprite.hires = true;
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        for x in [-8, 0, 100, 232, 244] {
+            for correction in [0.0, 0.25, -0.5] {
+                sprite.x = x;
+                sprite.correction = [correction, 0.25];
+                let snapshot = Snapshot::new(vec![sprite.clone()], &source);
+                let original = snapshot.compose_camera(
+                    &source,
+                    &vec![0; 720 * 480],
+                    &source.palette,
+                    [0, 0],
+                    3,
+                    1.0,
+                );
+                let wide = snapshot.compose_view(
+                    &source,
+                    &vec![0; view.width * view.height],
+                    &source.palette,
+                    [0, 0],
+                    view,
+                    1.0,
+                    Default::default(),
+                    None,
+                );
+                for y in 0..480 {
+                    for x in 0..720 {
+                        assert_eq!(
+                            original[y * 720 + x],
+                            wide[y * view.width + x + view.padding]
+                        );
+                    }
+                }
+                if x == 244 {
+                    assert!(wide.iter().any(|c| *c == 0x03e0));
+                    assert!(!original.iter().any(|c| *c == 0x03e0));
+                }
+            }
+        }
+    }
     #[test]
     fn panels_without_gameplay_hud_marker_keep_original_layout() {
         let mut source = MemMap::new(Vec::new());

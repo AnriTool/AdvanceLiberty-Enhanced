@@ -53,6 +53,57 @@ fn step(m: &mut Machine, api: &RtApi, table: &HashMap<u32, Vec<BlockFn>>) -> Res
     }
     Err(format!("Fork has no accepted native variant {key:08x}"))
 }
+// Bounded presentation-only native span. A missing AOT block is an error;
+// this path never enters the interpreter or the live instrumentation API.
+pub(crate) fn presentation_span(m: &mut Machine, end: u32) -> Result<(), String> {
+    let api = native_host::Api::new(RtApi {
+        interp_one: defer,
+        ..RT_API
+    });
+    m.cpu.cpsr |= gba_core::cpu::FLAG_I;
+    crate::RESCUE.with(|table| {
+        let table = table.borrow();
+        for _ in 0..200_000 {
+            if key(m) == end {
+                return Ok(());
+            }
+            if m.bus.halted {
+                return Err("Presentation span halted".into());
+            }
+            step(m, &api.base, &table)?;
+        }
+        Err("Presentation span exceeded budget".into())
+    })
+}
+pub(crate) fn presentation_observe(
+    m: &mut Machine,
+    end: u32,
+    mut observe: impl FnMut(&mut Machine, u32) -> Result<(), String>,
+) -> Result<(), String> {
+    let api = native_host::Api::new(RtApi {
+        interp_one: defer,
+        ..RT_API
+    });
+    m.cpu.cpsr |= gba_core::cpu::FLAG_I;
+    crate::RESCUE.with(|table| {
+        let table = table.borrow();
+        for _ in 0..1_000_000 {
+            let pc = key(m);
+            if pc == end {
+                return Ok(());
+            }
+            if m.bus.halted {
+                return Err("Presentation geometry halted".into());
+            }
+            observe(m, pc)?;
+            if key(m) != pc {
+                continue;
+            }
+            step(m, &api.base, &table)?;
+        }
+        Err("Presentation geometry exceeded budget".into())
+    })
+}
 fn key(m: &Machine) -> u32 {
     m.cpu.regs[15] | m.cpu.thumb() as u32
 }
@@ -447,5 +498,23 @@ impl Replay {
         }
         report.flush()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn presentation_span_never_interprets_a_missing_native_block() {
+        let mut m = Machine::new(vec![0; 32]);
+        m.cpu.regs[15] = 0x08001000;
+        m.cpu.cpsr |= gba_core::cpu::FLAG_T;
+        let clock = m.bus.clock;
+        let registers = m.cpu.regs;
+        assert!(presentation_span(&mut m, 0x08001003)
+            .unwrap_err()
+            .contains("native miss"));
+        assert_eq!(m.cpu.regs, registers);
+        assert_eq!(m.bus.clock, clock);
     }
 }

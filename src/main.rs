@@ -38,6 +38,7 @@ mod render_settings;
 mod save;
 mod scene_replay;
 mod session;
+mod viewport;
 type BlockFn = extern "C" fn(*const RtApi, *mut c_void) -> u32;
 #[derive(Default)]
 struct Counters {
@@ -211,6 +212,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         args.remove(i);
         render_settings.textures = render_settings::TextureMapping::Affine;
     }
+    let override_aspect = if let Some(i) = args.iter().position(|s| s == "--widescreen") {
+        args.remove(i);
+        render_settings.aspect = viewport::Aspect::Wide;
+        true
+    } else {
+        false
+    };
     let preview_enabled = if let Some(i) = args.iter().position(|s| s == "--camera-preview") {
         args.remove(i);
         true
@@ -541,6 +549,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ui) = desktop.as_ref() {
         let saved = ui.initial_render_settings();
         render_settings.hud = saved.hud;
+        if !override_aspect {
+            render_settings.aspect = saved.aspect;
+        }
         if !override_renderer {
             render_settings.renderer = saved.renderer;
         }
@@ -550,6 +561,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(feature = "desktop")]
     let mut textures = texture_creator.as_ref().map(desktop::Textures::new);
+    if let (Some(preview), Some(recording)) = (camera_preview.as_mut(), recording.as_ref()) {
+        preview.log_session(recording.directory())?;
+    }
     let mut api = RtApi {
         guard,
         interp_one: interp,

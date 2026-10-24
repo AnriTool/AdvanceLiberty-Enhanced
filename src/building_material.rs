@@ -2,7 +2,12 @@
 //! No guest writes. Pixel coverage is a new rasterizer, not a bit-exact GBA model.
 use crate::building_projection::{bytes, word};
 use gba_core::{ppu, Machine, MemMap};
-use std::{collections::HashMap, io::Write, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+    path::Path,
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct Input {
@@ -79,6 +84,198 @@ impl Orientation {
         [u, v]
     }
 }
+// The special roof path always uses the primary atlas. Reconstruct its UV
+// orientation before guest clipping, which otherwise discards wide-only faces.
+// Restrict this to axis-aligned, constant-depth quads with an affine UV basis.
+fn special_orientation(vertices: &[[f64; 5]], model_orientation: bool) -> Option<Orientation> {
+    if vertices.len() != 4 {
+        return None;
+    }
+    let z = vertices[0][2];
+    if z <= 0.0
+        || vertices
+            .iter()
+            .any(|p| p.iter().any(|v| !v.is_finite()) || (p[2] - z).abs() > 1e-6)
+    {
+        return None;
+    }
+    let points: Vec<_> = vertices
+        .iter()
+        .map(|p| [p[0] / z, -p[1] / z, p[3], p[4]])
+        .collect();
+    let [a, b, c] = [points[0], points[1], points[2]];
+    let [dx1, dy1, dx2, dy2] = [b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]];
+    let det = dx1 * dy2 - dx2 * dy1;
+    if det.abs() < 1e-10 {
+        return None;
+    }
+    let gradient = |k: usize| {
+        let (d1, d2) = (b[k] - a[k], c[k] - a[k]);
+        [(d1 * dy2 - d2 * dy1) / det, (dx1 * d2 - dx2 * d1) / det]
+    };
+    let (u, v) = (gradient(2), gradient(3));
+    for (k, g) in [(2, u), (3, v)] {
+        let p = points[3];
+        if (a[k] + g[0] * (p[0] - a[0]) + g[1] * (p[1] - a[1]) - p[k]).abs() > 1e-5 {
+            return None;
+        }
+    }
+    let rotation = if v[0].abs() > u[0].abs() {
+        if model_orientation {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+    let (horizontal, vertical) = match rotation {
+        1 => ([-v[0], -v[1]], u),
+        2 => (v, [-u[0], -u[1]]),
+        _ => (u, v),
+    };
+    if horizontal[0].abs() < 1e-8
+        || vertical[1].abs() < 1e-8
+        || horizontal[1].abs() > horizontal[0].abs() * 1e-6
+        || vertical[0].abs() > vertical[1].abs() * 1e-6
+    {
+        return None;
+    }
+    Some(Orientation {
+        rotation,
+        mirror_u: horizontal[0] < 0.0,
+        mirror_v: vertical[1] < 0.0,
+    })
+}
+fn stable_roof_orientation(
+    native: Orientation,
+    geometry: Option<Orientation>,
+    a: [i32; 4],
+    b: [i32; 4],
+) -> Orientation {
+    let Some(geometry) = geometry.filter(|g| g.rotation == native.rotation) else {
+        return native;
+    };
+    let mut result = native;
+    // GBA rounds clipped diagonal endpoints to the same column/row. Its
+    // strict comparisons then lose the flip, although a wide view still sees
+    // the rest of the roof. Use the non-degenerate source basis on that axis.
+    if a[0] == b[0] {
+        result.mirror_u = geometry.mirror_u;
+    }
+    if a[1] == b[1] {
+        result.mirror_v = geometry.mirror_v;
+    }
+    result
+}
+fn merge_texture<K: Eq + std::hash::Hash>(
+    bank: &mut HashMap<K, Option<Arc<Vec<u8>>>>,
+    key: K,
+    texture: &Option<Arc<Vec<u8>>>,
+) {
+    match bank.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(texture.clone());
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            let conflict = match (entry.get(), texture) {
+                (Some(old), Some(new)) => {
+                    (1..127).any(|v| (1..127).any(|u| old[v * 128 + u] != new[v * 128 + u]))
+                }
+                (_, None) => true,
+                _ => false,
+            };
+            if conflict {
+                entry.insert(None);
+            }
+        }
+    }
+}
+fn remember_texture<K: Copy + Eq + std::hash::Hash>(
+    bank: &mut HashMap<K, Option<Arc<Vec<u8>>>>,
+    order: &mut std::collections::VecDeque<K>,
+    key: K,
+    texture: &Option<Arc<Vec<u8>>>,
+    limit: usize,
+) {
+    if !bank.contains_key(&key) {
+        while order.len() >= limit {
+            if let Some(old) = order.pop_front() {
+                bank.remove(&old);
+            }
+        }
+        order.push_back(key);
+    }
+    merge_texture(bank, key, texture);
+}
+type MaterialKey = (u32, u32, bool, bool);
+#[derive(Default)]
+pub struct MaterialBank {
+    face_order: std::collections::VecDeque<(MaterialKey, u32)>,
+    material_order: std::collections::VecDeque<MaterialKey>,
+    faces: HashMap<(MaterialKey, u32), Option<Arc<Vec<u8>>>>,
+    canonical: HashMap<MaterialKey, Option<Arc<Vec<u8>>>>,
+}
+impl MaterialBank {
+    pub fn restore(&mut self, capture: &mut Capture) -> usize {
+        if !capture.wide {
+            return 0;
+        }
+        for (&key, texture) in &capture.canonical {
+            // Only immutable cartridge atlases can be reused across captures.
+            if key.0 >> 24 != 8 || (key.1 != 0 && key.1 >> 24 != 8) {
+                continue;
+            }
+            remember_texture(
+                &mut self.canonical,
+                &mut self.material_order,
+                key,
+                texture,
+                128,
+            );
+        }
+        for (&(key, source), texture) in &capture.face_canonical {
+            if key.0 >> 24 == 8 && (key.1 == 0 || key.1 >> 24 == 8) {
+                remember_texture(
+                    &mut self.faces,
+                    &mut self.face_order,
+                    (key, source),
+                    texture,
+                    512,
+                );
+            }
+        }
+        let mut count = 0;
+        for (i, face) in capture.faces.iter_mut().enumerate() {
+            if face.input.size != 128
+                || face.input.uv.is_empty()
+                || (!face.texture.is_empty() && !capture.inferred.contains(&i))
+            {
+                continue;
+            }
+            if let Some(key) = capture.material_keys.get(&i) {
+                let face_key = (*key, face.input.source);
+                if matches!(capture.face_canonical.get(&face_key), Some(None)) {
+                    continue;
+                }
+                let texture = self
+                    .faces
+                    .get(&face_key)
+                    .or_else(|| self.canonical.get(key));
+                if let Some(Some(texture)) = texture {
+                    face.texture = texture.clone();
+                    for (vertex, uv) in face.vertices.iter_mut().zip(&face.input.uv) {
+                        vertex[3] = uv[0];
+                        vertex[4] = uv[1];
+                    }
+                    capture.inferred.remove(&i);
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+}
 #[derive(Clone, Default)]
 pub struct Capture {
     faces: Vec<Face>,
@@ -89,9 +286,113 @@ pub struct Capture {
     quads: HashMap<u32, usize>,
     rows: Vec<String>,
     palette: Vec<u8>,
+    pub wide: bool,
+    pub geometry_only: bool,
+    pub side_faces: usize,
+    inferred: HashSet<usize>,
+    material_keys: HashMap<usize, MaterialKey>,
+    canonical: HashMap<MaterialKey, Option<Arc<Vec<u8>>>>,
+    face_canonical: HashMap<(MaterialKey, u32), Option<Arc<Vec<u8>>>>,
+    offscreen_special: HashMap<usize, (Arc<Vec<u8>>, Orientation)>,
+}
+fn same_face(a: &Face, b: &Face) -> bool {
+    a.input.source == b.input.source
+        && a.vertices.len() == b.vertices.len()
+        && a.vertices.iter().zip(&b.vertices).all(|(a, b)| {
+            a[..3]
+                .iter()
+                .zip(&b[..3])
+                .all(|(x, y)| (x - y).abs() < 1e-7)
+        })
 }
 impl Capture {
+    pub fn append_missing_geometry(&mut self, side: &Self) -> usize {
+        // The side pass preserves the native painter order. Insert missing faces
+        // around shared anchors rather than painting every edge building last.
+        let original = std::mem::take(&mut self.faces);
+        let keys = std::mem::take(&mut self.material_keys);
+        let inferred = std::mem::take(&mut self.inferred);
+        let mut ordered: Vec<(bool, usize)> = Vec::new();
+        let mut pending = Vec::new();
+        let mut cursor = 0;
+        let mut count = 0;
+        for (index, face) in side.faces.iter().enumerate() {
+            let anchor = original.iter().position(|f| same_face(f, face));
+            if let Some(anchor) = anchor {
+                if anchor >= cursor {
+                    ordered.extend((cursor..anchor).map(|i| (false, i)));
+                    ordered.extend(pending.drain(..).map(|i| (true, i)));
+                    ordered.push((false, anchor));
+                    cursor = anchor + 1;
+                }
+            } else {
+                pending.push(index);
+                count += 1;
+            }
+        }
+        ordered.extend((cursor..original.len()).map(|i| (false, i)));
+        ordered.extend(pending.into_iter().map(|i| (true, i)));
+        for (from_side, index) in ordered {
+            let (face, key, provisional) = if from_side {
+                (
+                    &side.faces[index],
+                    side.material_keys.get(&index),
+                    side.inferred.contains(&index),
+                )
+            } else {
+                (
+                    &original[index],
+                    keys.get(&index),
+                    inferred.contains(&index),
+                )
+            };
+            let target = self.faces.len();
+            self.faces.push(face.clone());
+            if let Some(key) = key {
+                self.material_keys.insert(target, *key);
+            }
+            if provisional {
+                self.inferred.insert(target);
+            }
+        }
+        self.side_faces += count;
+        count
+    }
+    pub fn complete_offscreen(&mut self) -> usize {
+        if !self.wide {
+            return 0;
+        }
+        let mut count = 0;
+        for (i, face) in self.faces.iter_mut().enumerate() {
+            if face.texture.is_empty() && face.input.size == 128 && !face.input.uv.is_empty() {
+                if let Some((texture, transform)) = self.offscreen_special.get(&i) {
+                    face.texture = texture.clone();
+                    self.inferred.insert(i);
+                    for vertex in &mut face.vertices {
+                        let uv = transform.apply([vertex[3], vertex[4]]);
+                        vertex[3] = uv[0];
+                        vertex[4] = uv[1];
+                    }
+                    count += 1;
+                    continue;
+                }
+                if let Some(Some(texture)) = self
+                    .material_keys
+                    .get(&i)
+                    .and_then(|k| self.canonical.get(k))
+                {
+                    face.texture = texture.clone();
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+    #[cfg(test)]
     pub fn supports_camera(&self, delta: [i32; 3], scale: usize) -> bool {
+        self.supports_view(delta, crate::viewport::View::new(scale, Default::default()))
+    }
+    pub fn supports_view(&self, delta: [i32; 3], view: crate::viewport::View) -> bool {
         self.faces
             .iter()
             .filter(|f| !f.input.uv.is_empty() && f.texture.is_empty())
@@ -102,7 +403,7 @@ impl Capture {
                     v[1] += delta[1] as f64 / 65536.0;
                     v[2] += delta[2] as f64 / 65536.0;
                 }
-                !polygon_has_samples(&clip(vertices), scale)
+                !polygon_has_samples_view(&clip_horizontal(vertices, view.extent()), view)
             })
     }
     pub fn restore_edge_materials(&mut self, previous: &Self, camera_delta: [i32; 3]) -> usize {
@@ -190,24 +491,37 @@ impl Capture {
         scale: usize,
         mapping: crate::render_settings::TextureMapping,
     ) -> Result<Vec<u8>, String> {
+        self.live_layer_view(
+            delta,
+            crate::viewport::View::new(scale, Default::default()),
+            mapping,
+        )
+    }
+    pub fn live_layer_view(
+        &self,
+        delta: [i32; 3],
+        view: crate::viewport::View,
+        mapping: crate::render_settings::TextureMapping,
+    ) -> Result<Vec<u8>, String> {
+        let scale = view.scale;
         // A model fully culled by the guest can omit its draw-batch call.
         // Only a visible textured face needs a captured texture here. Flat
         // faces use the scene palette supplied by the live compositor.
-        let mut layer = vec![0; 240 * 160 * scale * scale];
-        for face in &self.faces {
+        let mut layer = vec![0; view.width * view.height];
+        for (face_index, face) in self.faces.iter().enumerate() {
             let mut vertices = face.vertices.clone();
             for v in &mut vertices {
                 v[0] -= delta[0] as f64 / 65536.0;
                 v[1] += delta[1] as f64 / 65536.0;
                 v[2] += delta[2] as f64 / 65536.0;
             }
-            let vertices = clip(vertices);
+            let vertices = clip_horizontal(vertices, view.extent());
             if vertices.len() < 3 {
                 continue;
             }
             if !face.input.uv.is_empty() && face.texture.is_empty() {
-                if polygon_has_samples(&vertices, scale) {
-                    return Err("Visible face has no captured material".into());
+                if polygon_has_samples_view(&vertices, view) {
+                    return Err(format!("Visible face has no captured material: source={:08x} size={} key={:?} canonical={:?}",face.input.source,face.input.size,self.material_keys.get(&face_index),self.material_keys.get(&face_index).and_then(|key|self.canonical.get(key)).map(|value|value.is_some())));
                 }
                 continue;
             }
@@ -215,7 +529,7 @@ impl Capture {
                 .iter()
                 .map(|v| {
                     [
-                        120.0 + 118.0 * v[0] / v[2],
+                        120.0 + view.offset() + 118.0 * v[0] / v[2],
                         120.0 - 118.0 * v[1] / v[2],
                         v[3],
                         v[4],
@@ -264,6 +578,52 @@ impl Capture {
             } else {
                 bytes(m, m.cpu.regs[1], 4096)?.to_vec()
             });
+            let mut atlases: HashMap<u32, Arc<Vec<u8>>> = HashMap::new();
+            for i in self.group_start..self.faces.len() {
+                if !self.wide {
+                    break;
+                }
+                if self.faces[i].input.size == 128 && !self.faces[i].input.uv.is_empty() {
+                    if self.special || self.geometry_only {
+                        if let Some(mut transform) =
+                            special_orientation(&self.faces[i].vertices, self.orientation)
+                        {
+                            let alternate = if self.special {
+                                false
+                            } else {
+                                transform.mirror_u = false;
+                                transform.mirror_v = false;
+                                if transform.rotation != 0 {
+                                    !self.orientation
+                                } else {
+                                    self.orientation
+                                }
+                            };
+                            let pointer =
+                                word(m, self.descriptor + if alternate { 4 } else { 0 })? as u32;
+                            if pointer >> 24 == 8 {
+                                let atlas = if let Some(atlas) = atlases.get(&pointer) {
+                                    atlas.clone()
+                                } else {
+                                    let atlas = Arc::new(bytes(m, pointer, 128 * 128)?.to_vec());
+                                    atlases.insert(pointer, atlas.clone());
+                                    atlas
+                                };
+                                self.offscreen_special.insert(i, (atlas, transform));
+                            }
+                        }
+                    }
+                    self.material_keys.insert(
+                        i,
+                        (
+                            word(m, self.descriptor)? as u32,
+                            word(m, self.descriptor + 4)? as u32,
+                            self.orientation,
+                            self.special,
+                        ),
+                    );
+                }
+            }
             for face in &mut self.faces[self.group_start..] {
                 if !face.input.uv.is_empty() && face.input.size == 64 {
                     if texture.is_empty() {
@@ -353,13 +713,38 @@ impl Capture {
             if face.input.size != 128 || face.input.uv.is_empty() || !face.texture.is_empty() {
                 return Err("Inconsistent quad material/source association".into());
             }
+            let guest_transform = transform;
+            if self.special {
+                transform = stable_roof_orientation(
+                    transform,
+                    special_orientation(&face.vertices, self.orientation),
+                    a,
+                    b,
+                );
+            }
             face.texture = Arc::new(bytes(m, full, 128 * 128)?.to_vec());
+            if let Some(&key) = self.material_keys.get(&index) {
+                let canonical: Vec<_> = (0..128 * 128)
+                    .map(|i| {
+                        let uv = transform.apply([(i % 128) as f64, (i / 128) as f64]);
+                        face.texture[uv[1].floor().clamp(0.0, 127.0) as usize * 128
+                            + uv[0].floor().clamp(0.0, 127.0) as usize]
+                    })
+                    .collect();
+                let canonical = Some(Arc::new(canonical));
+                merge_texture(&mut self.canonical, key, &canonical);
+                merge_texture(
+                    &mut self.face_canonical,
+                    (key, face.input.source),
+                    &canonical,
+                );
+            }
             for vertex in &mut face.vertices {
                 let p = transform.apply([vertex[3], vertex[4]]);
                 vertex[3] = p[0];
                 vertex[4] = p[1];
             }
-            self.rows.push(format!("{index},{descriptor:08x},{selected:08x},{full:08x},{mip},{},{},{},{alternate},{},{},{},{}",transform.rotation,transform.mirror_u,transform.mirror_v,checked_uv[0],checked_uv[1],checked_uv[2],checked_uv[3]));
+            self.rows.push(format!("{index},{descriptor:08x},{selected:08x},{full:08x},{mip},{},{},{},{alternate},{},{},{},{}",guest_transform.rotation,guest_transform.mirror_u,guest_transform.mirror_v,checked_uv[0],checked_uv[1],checked_uv[2],checked_uv[3]));
         }
         Ok(())
     }
@@ -524,23 +909,34 @@ impl Capture {
 
 // The homogeneous clip volume is taller than the 160-line viewport. A
 // surviving polygon may still cover no output samples, including thin edges.
-fn polygon_has_samples(vertices: &[[f64; 5]], scale: usize) -> bool {
+fn polygon_has_samples_view(vertices: &[[f64; 5]], view: crate::viewport::View) -> bool {
+    let scale = view.scale;
     if vertices.len() < 3 {
         return false;
     }
-    let project = |v: &[f64; 5]| [120.0 + 118.0 * v[0] / v[2], 120.0 - 118.0 * v[1] / v[2]];
+    let project = |v: &[f64; 5]| {
+        [
+            120.0 + view.offset() + 118.0 * v[0] / v[2],
+            120.0 - 118.0 * v[1] / v[2],
+        ]
+    };
     (1..vertices.len() - 1).any(|i| {
-        triangle_has_samples(
+        triangle_has_samples_width(
             [
                 project(&vertices[0]),
                 project(&vertices[i]),
                 project(&vertices[i + 1]),
             ],
             scale,
+            view.width,
         )
     })
 }
+#[cfg(test)]
 fn triangle_has_samples(v: [[f64; 2]; 3], scale: usize) -> bool {
+    triangle_has_samples_width(v, scale, 240 * scale)
+}
+fn triangle_has_samples_width(v: [[f64; 2]; 3], scale: usize, width: usize) -> bool {
     let edge = |a: [f64; 2], b: [f64; 2], p: [f64; 2]| {
         (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
     };
@@ -559,7 +955,7 @@ fn triangle_has_samples(v: [[f64; 2]; 3], scale: usize) -> bool {
             .clamp(0.0, limit as f64) as usize
     };
     for y in lo(1)..hi(1, 160 * scale) {
-        for x in lo(0)..hi(0, 240 * scale) {
+        for x in lo(0)..hi(0, width) {
             let p = [
                 (x as f64 + 0.5) / scale as f64,
                 (y as f64 + 0.5) / scale as f64,
@@ -574,14 +970,19 @@ fn triangle_has_samples(v: [[f64; 2]; 3], scale: usize) -> bool {
     }
     false
 }
-fn clip(mut vertices: Vec<[f64; 5]>) -> Vec<[f64; 5]> {
+fn clip(vertices: Vec<[f64; 5]>) -> Vec<[f64; 5]> {
+    clip_horizontal(vertices, 1.0)
+}
+fn clip_horizontal(mut vertices: Vec<[f64; 5]>, extent: f64) -> Vec<[f64; 5]> {
     for plane in 0..5 {
         let distance = |v: [f64; 5]| match plane {
             0 => v[2] - 32.0,
-            1 => v[2] + v[0],
-            2 => v[2] - v[0],
+            1 => v[2] * extent + v[0],
+            2 => v[2] * extent - v[0],
             3 => v[2] + v[1],
-            _ => v[2] - v[1],
+            // Screen y = 120 - 118*y/z: the top edge is y/z=120/118,
+            // not 1.0 (which leaves two native rows of missing buildings).
+            _ => v[2] * (120.0 / 118.0) - v[1],
         };
         let Some(mut a) = vertices.last().copied() else {
             break;
@@ -630,7 +1031,7 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
     spans: bool,
 ) {
     let inverse_depth = depth.map(|z| 1.0 / z);
-    let width = 240 * scale;
+    let width = image.len() / (160 * scale);
     let height = 160 * scale;
     let edge = |a: [f64; 4], b: [f64; 4], p: [f64; 2]| {
         (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
@@ -656,7 +1057,7 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
             // one-pixel margin and the original barycentric test below so
             // coverage and UV rounding remain identical at triangle edges.
             let py = (y as f64 + 0.5) / scale as f64;
-            let (mut left, mut right) = (0.0f64, 240.0f64);
+            let (mut left, mut right) = (0.0f64, width as f64 / scale as f64);
             for (a, b) in [(v[1], v[2]), (v[2], v[0]), (v[0], v[1])] {
                 let slope = -(b[1] - a[1]) / area;
                 let origin = edge(a, b, [0.0, py]) / area;
@@ -713,7 +1114,359 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clipped_roof_keeps_orientation_when_guest_diagonal_collapses_to_one_column() {
+        let native = Orientation {
+            rotation: 0,
+            mirror_u: false,
+            mirror_v: true,
+        };
+        let geometry = Orientation {
+            rotation: 0,
+            mirror_u: true,
+            mirror_v: true,
+        };
+        let stable =
+            stable_roof_orientation(native, Some(geometry), [239, 0, 0, 0], [239, 40, 100, 100]);
+        assert!(stable.mirror_u && stable.mirror_v);
+        let valid =
+            stable_roof_orientation(native, Some(geometry), [230, 0, 0, 0], [239, 40, 100, 100]);
+        assert!(!valid.mirror_u);
+        assert_eq!(
+            stable_roof_orientation(native, None, [239; 4], [239; 4]).mirror_u,
+            false
+        );
+    }
+    #[test]
+    fn side_building_is_inserted_before_the_nearer_anchor_in_painter_order() {
+        let near_input = Input {
+            source: 0x08000100,
+            color: 3,
+            size: 64,
+            uv: Vec::new(),
+        };
+        let near_vertices = vec![
+            [-120., 100., 100.],
+            [-80., 100., 100.],
+            [-80., 60., 100.],
+            [-120., 60., 100.],
+        ];
+        let mut main = Capture::default();
+        main.wide = true;
+        main.push(near_vertices.clone(), near_input.clone());
+        let mut side = Capture::default();
+        side.push(
+            vec![
+                [-180., 120., 120.],
+                [-100., 120., 120.],
+                [-100., 60., 120.],
+                [-180., 60., 120.],
+            ],
+            Input {
+                source: 0x08000200,
+                color: 5,
+                size: 64,
+                uv: Vec::new(),
+            },
+        );
+        side.push(near_vertices, near_input);
+        assert_eq!(main.append_missing_geometry(&side), 1);
+        let view = crate::viewport::View::new(1, crate::viewport::Aspect::Wide);
+        let layer = main
+            .live_layer_view(
+                [0; 3],
+                view,
+                crate::render_settings::TextureMapping::Perspective,
+            )
+            .unwrap();
+        assert_eq!(layer[30 * view.width + view.padding + 10], 3);
+        assert_eq!(main.faces[0].input.source, 0x08000200);
+        assert_eq!(main.faces[1].input.source, 0x08000100);
+    }
+    #[test]
+    fn inferred_roof_uses_the_captured_mapping_even_after_side_faces_are_inserted() {
+        let key = (0x08001000, 0x08001000, false, true);
+        let mut main = Capture::default();
+        main.wide = true;
+        main.push(
+            vec![[0., 0., 100.]; 3],
+            Input {
+                source: 0x08000100,
+                color: 1,
+                size: 64,
+                uv: Vec::new(),
+            },
+        );
+        let mut side = Capture::default();
+        side.wide = true;
+        side.push(
+            vec![[0., 0., 100.]; 4],
+            Input {
+                source: 0x08000200,
+                color: 1,
+                size: 128,
+                uv: vec![[12., 34.]; 4],
+            },
+        );
+        side.faces[0].texture = Arc::new(vec![8; 16384]);
+        side.faces[0].vertices[0][3] = 99.;
+        side.material_keys.insert(0, key);
+        side.inferred.insert(0);
+        main.append_missing_geometry(&side);
+        let index = main
+            .faces
+            .iter()
+            .position(|f| f.input.source == 0x08000200)
+            .unwrap();
+        assert_eq!(main.material_keys.get(&index), Some(&key));
+        let mut bank = MaterialBank::default();
+        bank.faces
+            .insert((key, 0x08000200), Some(Arc::new(vec![7; 16384])));
+        assert_eq!(bank.restore(&mut main), 1);
+        assert_eq!(main.faces[index].texture[0], 7);
+        assert_eq!(&main.faces[index].vertices[0][3..], &[12., 34.]);
+        assert!(!main.inferred.contains(&index));
+    }
+
+    #[test]
+    fn wide_geometry_merge_keeps_central_texture_and_adds_distinct_world_instances_once() {
+        let input = Input {
+            source: 0x08000100,
+            color: 1,
+            size: 64,
+            uv: vec![[0., 0.]; 3],
+        };
+        let vertices = vec![[0., 0., 100.], [10., 0., 100.], [0., 10., 100.]];
+        let mut main = Capture::default();
+        main.push(vertices.clone(), input.clone());
+        main.faces[0].texture = Arc::new(vec![7; 4096]);
+        let mut side = Capture::default();
+        side.push(vertices, input.clone());
+        side.faces[0].texture = Arc::new(vec![9; 4096]);
+        side.push(
+            vec![[150., 0., 100.], [160., 0., 100.], [150., 10., 100.]],
+            input,
+        );
+        side.faces[1].texture = Arc::new(vec![11; 4096]);
+        assert_eq!(main.append_missing_geometry(&side), 1);
+        assert_eq!(main.faces[0].texture[0], 7);
+        assert_eq!(main.faces[1].texture[0], 11);
+        assert_eq!(main.append_missing_geometry(&side), 0);
+        assert_eq!(main.side_faces, 1);
+    }
+
+    #[test]
+    fn roof_uv_basis_handles_all_axis_directions_and_rejects_tilted_faces() {
+        for swapped in [false, true] {
+            for flip_u in [false, true] {
+                for flip_v in [false, true] {
+                    for alternate in [false, true] {
+                        let vertices: Vec<_> = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]]
+                            .iter()
+                            .map(|&[x, y]| {
+                                let (mut u, mut v) = if swapped { (y, x) } else { (x, y) };
+                                if flip_u {
+                                    u = 1. - u;
+                                }
+                                if flip_v {
+                                    v = 1. - v;
+                                }
+                                [10. * x, -10. * y, 105., 128. * u, 128. * v]
+                            })
+                            .collect();
+                        let orientation = super::special_orientation(&vertices, alternate).unwrap();
+                        let mapped: Vec<_> = vertices
+                            .iter()
+                            .map(|p| orientation.apply([p[3], p[4]]))
+                            .collect();
+                        assert_eq!(mapped, vec![[0., 0.], [128., 0.], [128., 128.], [0., 128.]]);
+                        let mut tilted = vertices.clone();
+                        tilted[3][2] += 1.;
+                        assert!(super::special_orientation(&tilted, alternate).is_none());
+                        let mut wrong_uv = vertices.clone();
+                        wrong_uv[3][3] += 1.;
+                        assert!(super::special_orientation(&wrong_uv, alternate).is_none());
+                    }
+                }
+            }
+        }
+        assert!(super::special_orientation(&[[0.; 5]; 4], false).is_none());
+    }
+    #[test]
+    fn offscreen_roof_uses_rom_atlas_and_preserves_visible_guest_face() {
+        let mut machine = Machine::new(vec![13; 128 * 128]);
+        machine.cpu.regs[0] = 0x02000000;
+        machine.cpu.regs[3] = 1;
+        machine.bus.ewram[..4].copy_from_slice(&0x08000000u32.to_le_bytes());
+        let mut capture = Capture::default();
+        capture.wide = true;
+        for source in [0x08000020, 0x08000040] {
+            capture.push(
+                vec![
+                    [0., 0., 105.],
+                    [10., 0., 105.],
+                    [10., -10., 105.],
+                    [0., -10., 105.],
+                ],
+                Input {
+                    source,
+                    color: 1,
+                    size: 128,
+                    uv: vec![[128., 128.], [0., 128.], [0., 0.], [128., 0.]],
+                },
+            );
+        }
+        let visible = Arc::new(vec![7; 128 * 128]);
+        capture.faces[1].texture = visible.clone();
+        capture.observe(&machine, 0x0800db65).unwrap();
+        assert!(capture.faces[0].texture.is_empty());
+        assert_eq!(capture.complete_offscreen(), 1);
+        assert_eq!(capture.faces[0].texture[0], 13);
+        assert_eq!(&capture.faces[0].vertices[0][3..], &[0., 0.]);
+        assert!(Arc::ptr_eq(&capture.faces[1].texture, &visible));
+        assert_eq!(&capture.faces[1].vertices[0][3..], &[128., 128.]);
+        assert_eq!(capture.complete_offscreen(), 0);
+    }
+
     use super::*;
+    #[test]
+    fn building_faces_reach_the_top_row_at_both_aspects_and_scales() {
+        let mut capture = Capture::default();
+        capture.push(
+            vec![
+                [-80.0, 130.0, 100.0],
+                [-40.0, 130.0, 100.0],
+                [-40.0, 90.0, 100.0],
+                [-80.0, 90.0, 100.0],
+            ],
+            Input {
+                source: 0,
+                color: 9,
+                size: 64,
+                uv: Vec::new(),
+            },
+        );
+        for aspect in [
+            crate::viewport::Aspect::Original,
+            crate::viewport::Aspect::Wide,
+        ] {
+            for scale in [1, 3] {
+                let view = crate::viewport::View::new(scale, aspect);
+                let layer = capture
+                    .live_layer_view(
+                        [0; 3],
+                        view,
+                        crate::render_settings::TextureMapping::Perspective,
+                    )
+                    .unwrap();
+                for y in 0..2 * scale {
+                    assert_eq!(layer[y * view.width + 40 * scale + view.padding], 9);
+                }
+            }
+        }
+    }
+    #[test]
+    fn wide_visibility_checks_include_side_faces_and_cache_is_bounded() {
+        let mut capture = Capture::default();
+        capture.push(
+            vec![
+                [110.0, 0.0, 100.0],
+                [115.0, 0.0, 100.0],
+                [110.0, 5.0, 100.0],
+            ],
+            Input {
+                source: 0x08000100,
+                color: 1,
+                size: 128,
+                uv: vec![[0.0, 0.0]; 3],
+            },
+        );
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        assert!(capture.supports_camera([0; 3], 3));
+        assert!(!capture.supports_view([0; 3], view));
+        assert!(capture.supports_view([-30 * 65536, 0, 0], view));
+        let mut bank = HashMap::new();
+        let mut order = std::collections::VecDeque::new();
+        for i in 0..300 {
+            remember_texture(&mut bank, &mut order, i, &None, 128);
+        }
+        assert_eq!(bank.len(), 128);
+        assert!(!bank.contains_key(&0));
+        assert!(bank.contains_key(&299));
+    }
+    #[test]
+    fn material_bank_recovers_culled_faces_without_reusing_mutable_atlases() {
+        let mut known = Capture::default();
+        known.wide = true;
+        let key = (0x08000400, 0x08008000, false, false);
+        known
+            .canonical
+            .insert(key, Some(Arc::new(vec![9; 128 * 128])));
+        let mut bank = MaterialBank::default();
+        bank.restore(&mut known);
+        let mut next = Capture::default();
+        next.wide = true;
+        next.push(
+            vec![[0.0, 0.0, 100.0]; 3],
+            Input {
+                source: 0x08000200,
+                color: 1,
+                size: 128,
+                uv: vec![[0.0, 0.0]; 3],
+            },
+        );
+        next.material_keys.insert(0, key);
+        assert_eq!(bank.restore(&mut next), 1);
+        assert_eq!(next.faces[0].texture[0], 9);
+        next.faces[0].texture = Arc::new(Vec::new());
+        next.material_keys.insert(0, (0x02000400, 0, false, false));
+        assert_eq!(bank.restore(&mut next), 0);
+        next.material_keys.insert(0, key);
+        next.canonical.insert(key, None);
+        assert_eq!(bank.restore(&mut next), 0);
+        known
+            .face_canonical
+            .insert((key, 0x08000200), Some(Arc::new(vec![5; 128 * 128])));
+        bank.restore(&mut known);
+        assert_eq!(bank.restore(&mut next), 1);
+        assert_eq!(next.faces[0].texture[0], 5);
+    }
+    #[test]
+    fn offscreen_materials_require_the_same_batch_and_leave_visible_faces_untouched() {
+        let mut capture = Capture::default();
+        capture.wide = true;
+        for source in [0x08000100, 0x08000200, 0x08000300] {
+            capture.push(
+                vec![[0.0, 0.0, 100.0]; 3],
+                Input {
+                    source,
+                    color: 1,
+                    size: 128,
+                    uv: vec![[0.0, 0.0]; 3],
+                },
+            );
+        }
+        let visible = Arc::new(vec![7; 128 * 128]);
+        capture.faces[0].texture = visible.clone();
+        capture
+            .material_keys
+            .insert(0, (0x08000400, 0x08008000, false, false));
+        capture
+            .material_keys
+            .insert(1, (0x08000400, 0x08008000, false, false));
+        capture
+            .material_keys
+            .insert(2, (0x08000400, 0x08008000, true, false));
+        let texture = Arc::new(vec![8; 128 * 128]);
+        capture.canonical.insert(
+            (0x08000400, 0x08008000, false, false),
+            Some(texture.clone()),
+        );
+        assert_eq!(capture.complete_offscreen(), 1);
+        assert!(Arc::ptr_eq(&capture.faces[0].texture, &visible));
+        assert!(Arc::ptr_eq(&capture.faces[1].texture, &texture));
+        assert!(capture.faces[2].texture.is_empty());
+    }
     #[test]
     fn material_requirement_matches_actual_pixel_coverage() {
         let face = Face {

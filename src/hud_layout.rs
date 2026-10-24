@@ -107,23 +107,55 @@ pub struct Layout {
     axes: [(Vec<Option<usize>>, Vec<Option<usize>>); 3],
 }
 impl Layout {
+    #[cfg(test)]
     pub fn new(settings: Settings, scale: usize) -> Self {
-        let axes = groups(settings).map(|g| {
-            let axis = |count: usize, anchor: f64, start: usize, end: usize| {
-                (0..count * scale)
-                    .map(|p| {
-                        let source = anchor
-                            + (p as f64 / scale as f64 - anchor) * 100.0 / g.size.percent() as f64;
-                        (source >= start as f64 && source < end as f64)
-                            .then(|| source.floor() as usize)
-                    })
-                    .collect()
-            };
-            (
-                axis(240, g.anchor[0], g.rect[0], g.rect[2]),
-                axis(160, g.anchor[1], g.rect[1], g.rect[3]),
-            )
-        });
+        Self::new_view(
+            settings,
+            crate::viewport::View::new(scale, Default::default()),
+            true,
+        )
+    }
+    pub fn new_view(settings: Settings, view: crate::viewport::View, edges: bool) -> Self {
+        let scale = view.scale;
+        let axes = groups(settings)
+            .into_iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let edge = if !edges {
+                    0.0
+                } else {
+                    match i {
+                        0 => -view.offset(),
+                        1 => view.offset(),
+                        _ => 0.0,
+                    }
+                };
+                let axis = |count: usize, anchor: f64, start: usize, end: usize, shift: f64| {
+                    (0..count)
+                        .map(|p| {
+                            let source = anchor
+                                + (p as f64 / scale as f64 - shift - anchor) * 100.0
+                                    / g.size.percent() as f64;
+                            (source >= start as f64 && source < end as f64)
+                                .then(|| source.floor() as usize)
+                        })
+                        .collect()
+                };
+                (
+                    axis(
+                        view.width,
+                        g.anchor[0],
+                        g.rect[0],
+                        g.rect[2],
+                        view.offset() + edge,
+                    ),
+                    axis(view.height, g.anchor[1], g.rect[1], g.rect[3], 0.0),
+                )
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .ok()
+            .unwrap();
         Self { axes }
     }
     pub fn pixel(&self, source: &[Option<u16>], x: usize, y: usize) -> Option<u16> {
@@ -138,6 +170,18 @@ impl Layout {
         }
         None
     }
+}
+pub fn edge_offset(position: [f64; 2], size: [f64; 2], padding: f64) -> f64 {
+    for (i, g) in groups(Settings::default()).iter().take(2).enumerate() {
+        if position[0] >= g.rect[0] as f64
+            && position[1] >= g.rect[1] as f64
+            && position[0] + size[0] <= g.rect[2] as f64
+            && position[1] + size[1] <= g.rect[3] as f64
+        {
+            return if i == 0 { -padding } else { padding };
+        }
+    }
+    0.0
 }
 // World actors must never be classified from screen position. Call this only
 // for OBJs already verified as screen-fixed, priority-zero UI sprites.
@@ -160,6 +204,24 @@ pub fn sprite(settings: Settings, position: [f64; 2], size: [f64; 2]) -> ([f64; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wide_hud_pins_radar_left_status_right_and_messages_center() {
+        let mut source = vec![None; 38400];
+        source[8 * 240 + 8] = Some(1);
+        source[8 * 240 + 232] = Some(2);
+        source[144 * 240 + 120] = Some(3);
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        let layout = Layout::new_view(Settings::default(), view, true);
+        assert_eq!(layout.pixel(&source, 24, 24), Some(1));
+        assert_eq!(
+            layout.pixel(&source, 232 * 3 + 2 * view.padding, 24),
+            Some(2)
+        );
+        assert_eq!(
+            layout.pixel(&source, 120 * 3 + view.padding, 144 * 3),
+            Some(3)
+        );
+    }
     #[test]
     fn default_layout_is_pixel_exact_at_native_and_enhanced_resolution() {
         let source: Vec<_> = (0..38400)

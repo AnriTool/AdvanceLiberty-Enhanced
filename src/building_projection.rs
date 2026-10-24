@@ -1,5 +1,5 @@
 //! Read-only USA building transform/projection checks and fractional outlines.
-//! Original face selection is retained; this is not a replacement game renderer.
+//! Wide model selection runs in an isolated native geometry pass.
 use gba_core::{Machine, MemMap};
 use std::{collections::HashMap, io::Write, path::Path};
 pub(crate) fn bytes(m: &Machine, addr: u32, n: usize) -> Result<&[u8], String> {
@@ -49,16 +49,38 @@ pub struct Observer {
     uv64_checked: usize,
     rows: Vec<String>,
     camera: Option<[i32; 3]>,
+    extend_world: bool,
+    extended_materials: Option<crate::building_material::Capture>,
+}
+fn wide_model_edge_tile(regs: &mut [u32; 16]) {
+    let (left, right) = (regs[5] as i32, regs[4] as i32);
+    if right < 0 && right >= -32 {
+        regs[5] = 0;
+        regs[4] = 8;
+    } else if left > 240 && left <= 272 {
+        regs[5] = 232;
+        regs[4] = 240;
+    }
 }
 fn project(v: [f64; 3]) -> [f64; 2] {
     [120.0 + 118.0 * v[0] / v[2], 120.0 - 118.0 * v[1] / v[2]]
 }
 impl Observer {
+    pub fn set_wide(&mut self, wide: bool) {
+        self.extend_world = wide;
+        self.materials.wide = wide;
+        self.objects.wide = wide;
+    }
+
+    pub fn side_failures(&self) -> &[String] {
+        self.objects.side_failures()
+    }
     #[inline]
     pub fn interested(&self, key: u32) -> bool {
         matches!(
             key,
-            0x0800e045
+            0x0800d301
+                | 0x0800e045
                 | 0x0800e04f
                 | 0x0800e059
                 | 0x030018a4
@@ -71,7 +93,7 @@ impl Observer {
             || crate::building_material::Capture::interested(key)
     }
     pub fn into_live(
-        self,
+        mut self,
         source: &MemMap,
     ) -> Result<
         (
@@ -88,10 +110,63 @@ impl Observer {
             return Err("Unsupported building scroll".into());
         }
         let objects = self.objects.live_snapshot(source)?;
+        self.materials.complete_offscreen();
+        if let Some(materials) = self.extended_materials.take() {
+            self.materials.append_missing_geometry(&materials);
+        }
         self.materials.live_layer([0; 2], 1)?;
         Ok((self.materials, objects))
     }
+    fn wide_buildings(m: &Machine) -> Result<crate::building_material::Capture, String> {
+        let mut fork = m.try_fork_for_research().map_err(str::to_string)?;
+        let mut capture = Self::default();
+        capture.materials.wide = true;
+        capture.materials.geometry_only = true;
+        let scale = word(m, 0x03000060)? as f64 / 65536.;
+        if scale <= 0. {
+            return Err("Invalid wide building scale".into());
+        }
+        let padding = (crate::viewport::View::new(3, crate::viewport::Aspect::Wide).offset()
+            / scale
+            * 65536.)
+            .ceil() as i32;
+        crate::scene_replay::presentation_observe(&mut fork, 0x0800d53f, |fork, key| {
+            if key == 0x0800d319 {
+                for (offset, delta) in [(0x84, -padding), (0x88, padding)] {
+                    let value =
+                        i32::from_le_bytes(fork.bus.iwram[offset..offset + 4].try_into().unwrap());
+                    fork.bus.iwram[offset..offset + 4]
+                        .copy_from_slice(&value.wrapping_add(delta).to_le_bytes());
+                }
+            }
+            // The guest's screen-tile visibility bookkeeping has only 30
+            // columns. Map side-only bounds to the nearest edge tile in this
+            // copy; actual geometry retains world coordinates for the host clipper.
+            if key == 0x0800e6c1 {
+                wide_model_edge_tile(&mut fork.cpu.regs);
+            }
+            if capture.interested(key) {
+                capture.observe(fork, key)?;
+            }
+            // Geometry and atlas pointers are complete at the batch boundary.
+            // The host rasterizer consumes them, so guest pixel loops are unnecessary.
+            if key == 0x0800db65 {
+                fork.cpu.regs[15] = fork.cpu.regs[14] & !1;
+            }
+            Ok(())
+        })?;
+        capture.materials.complete_offscreen();
+        Ok(capture.materials)
+    }
     pub fn observe(&mut self, m: &Machine, key: u32) -> Result<(), String> {
+        if key == 0x0800d301 && self.extend_world {
+            match Self::wide_buildings(m) {
+                Ok(materials) => self.extended_materials = Some(materials),
+                Err(reason) => self
+                    .objects
+                    .record_side_failure(format!("buildings: {reason}")),
+            }
+        }
         self.objects.observe(m, key)?;
         self.materials.observe(m, key)?;
         if let Some(axis) = [0x0800e045, 0x0800e04f, 0x0800e059]
@@ -414,6 +489,25 @@ fn line(image: &mut [u16], width: usize, height: usize, a: [f64; 2], b: [f64; 2]
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wide_model_bookkeeping_admits_side_only_boxes_and_keeps_central_boxes() {
+        for (left, right, expected) in [
+            (-30, -1, [0, 8]),
+            (241, 270, [232, 240]),
+            (0, 239, [0, 239]),
+            (-10, 20, [-10, 20]),
+            (220, 250, [220, 250]),
+            (-80, -40, [-80, -40]),
+            (280, 300, [280, 300]),
+        ] {
+            let mut registers = [0u32; 16];
+            registers[5] = left as u32;
+            registers[4] = right as u32;
+            super::wide_model_edge_tile(&mut registers);
+            assert_eq!([registers[5] as i32, registers[4] as i32], expected);
+        }
+    }
+
     use super::*;
     #[test]
     fn clipped_triangle_does_not_reuse_preceding_quads_fourth_vertex_uv() {

@@ -17,6 +17,7 @@ pub struct Textures<'a> {
     creator: &'a TextureCreator<WindowContext>,
     original: Option<Texture<'a>>,
     preview: Option<Texture<'a>>,
+    wide: Option<Texture<'a>>,
     menu: Option<Texture<'a>>,
     allocations: u64,
 }
@@ -26,6 +27,7 @@ impl<'a> Textures<'a> {
             creator,
             original: None,
             preview: None,
+            wide: None,
             menu: None,
             allocations: 0,
         }
@@ -41,14 +43,15 @@ impl<'a> Textures<'a> {
         }
         Ok(self.menu.as_mut().unwrap())
     }
-    fn get(&mut self, preview: bool) -> Result<&mut Texture<'a>, String> {
-        let slot = if preview {
+    fn sized(&mut self, width: u32, height: u32) -> Result<&mut Texture<'a>, String> {
+        let slot = if (width, height) == (854, 480) {
+            &mut self.wide
+        } else if width == 720 {
             &mut self.preview
         } else {
             &mut self.original
         };
         if slot.is_none() {
-            let (width, height) = if preview { (720, 480) } else { (240, 160) };
             *slot = Some(
                 self.creator
                     .create_texture_streaming(PixelFormatEnum::RGB24, width, height)
@@ -66,6 +69,7 @@ pub struct Desktop {
     audio: Option<AudioQueue<i16>>,
     _sdl: sdl2::Sdl,
     pixels: Vec<u8>,
+    frame_size: (u32, u32),
     paused: bool,
     focused: bool,
     menu: Option<crate::options::Menu>,
@@ -126,7 +130,11 @@ impl Desktop {
             .window(
                 "AdvanceRecomp | Native dispatch: -- | interpreted: 0 | FPS: --",
                 960,
-                640,
+                if preferences.render.aspect == crate::viewport::Aspect::Wide {
+                    540
+                } else {
+                    640
+                },
             )
             .position_centered()
             .resizable()
@@ -179,6 +187,7 @@ impl Desktop {
             audio,
             _sdl: sdl,
             pixels: vec![0; 240 * 160 * 3],
+            frame_size: (240, 160),
             paused: false,
             focused: true,
             menu: None,
@@ -438,6 +447,17 @@ impl Desktop {
             let _ = self.canvas.window_mut().set_fullscreen(old);
             return Err(e);
         }
+        if settings.aspect != menu.prefs.render.aspect && !menu.prefs.fullscreen {
+            let (width, _) = self.canvas.window().size();
+            let view = crate::viewport::View::new(3, menu.prefs.render.aspect);
+            if let Err(e) = self
+                .canvas
+                .window_mut()
+                .set_size(width, (width as usize * view.height / view.width) as u32)
+            {
+                eprintln!("Window resize: {e}");
+            }
+        }
         self.controls = menu.controls.clone();
         *settings = menu.prefs.render;
         self.render_settings = *settings;
@@ -452,14 +472,14 @@ impl Desktop {
         if let Some(menu) = &mut self.menu {
             menu.draw(&mut self.canvas, textures.menu()?)?;
         } else {
-            let preview = self.pixels.len() == 720 * 480 * 3;
-            let (width, height) = if preview { (720, 480) } else { (240, 160) };
+            let (width, height) = self.frame_size;
             self.canvas
                 .set_logical_size(width, height)
                 .map_err(|e| e.to_string())?;
             self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
             self.canvas.clear();
-            self.canvas.copy(textures.get(preview)?, None, None)?;
+            self.canvas
+                .copy(textures.sized(width, height)?, None, None)?;
             self.canvas.present();
         }
         Ok(())
@@ -496,10 +516,15 @@ impl Desktop {
         let start = Instant::now();
         let frame = preview.unwrap_or(&source.framebuffer);
         let (width, height) = if preview.is_some() {
-            (720u32, 480u32)
+            let width = frame.len() / 480;
+            if ![720, 854].contains(&width) || frame.len() != width * 480 {
+                return Err("Invalid Enhanced frame size".into());
+            }
+            (width as u32, 480u32)
         } else {
             (240, 160)
         };
+        self.frame_size = (width, height);
         let samples = &source.audio_buf;
         if self.canvas.logical_size() != (width, height) {
             self.canvas
@@ -511,7 +536,7 @@ impl Desktop {
             out.copy_from_slice(&rgb(pixel));
         }
         let pixels = self.pixels.as_slice();
-        let texture = textures.get(preview.is_some())?;
+        let texture = textures.sized(width, height)?;
         texture
             .update(None, pixels, width as usize * 3)
             .map_err(|e| e.to_string())?;
@@ -622,7 +647,15 @@ mod tests {
             settings.renderer,
             crate::render_settings::Renderer::Enhanced
         );
-        for _ in 0..3 {
+        send(&mut ui, &mut settings, Keycode::Down); // Graphics root
+        send(&mut ui, &mut settings, Keycode::Return);
+        send(&mut ui, &mut settings, Keycode::Down); // aspect
+        send(&mut ui, &mut settings, Keycode::Return); // wide draft
+        ui.present_paused(&mut textures).unwrap();
+        capture(&ui, "graphics-menu.ppm");
+        assert_eq!(settings.aspect, crate::viewport::Aspect::Original);
+        send(&mut ui, &mut settings, Keycode::Escape); // root 5
+        for _ in 0..2 {
             send(&mut ui, &mut settings, Keycode::Down);
         }
         send(&mut ui, &mut settings, Keycode::Return); // HUD submenu
@@ -660,7 +693,12 @@ mod tests {
         assert_eq!(ui.controls.binding_text(1, 6), "C");
         assert_eq!(settings.hud.radar, crate::hud_layout::Size::Medium);
         assert_eq!(settings.hud.status, crate::hud_layout::Size::Large);
-        // Restore original resolution after drawing the 720x480 menu.
+        assert_eq!(settings.aspect, crate::viewport::Aspect::Wide);
+        // Original -> wide -> original uses cached textures and restores sizes.
+        let wide = vec![31; 854 * 480];
+        ui.present(&source, Some(&wide), &mut textures).unwrap();
+        assert_eq!(ui.canvas.logical_size(), (854, 480));
+        ui.canvas.window_mut().set_size(960, 640).unwrap();
         ui.present(&source, None, &mut textures).unwrap();
         assert_eq!(ui.canvas.logical_size(), (240, 160));
         assert!(ui
@@ -694,6 +732,10 @@ mod tests {
             crate::render_settings::Renderer::Original
         );
         assert_eq!(ui.controls.binding_text(1, 6), "C");
+        assert_eq!(
+            ui.initial_render_settings().aspect,
+            crate::viewport::Aspect::Wide
+        );
         assert_eq!(
             ui.initial_render_settings().hud.radar,
             crate::hud_layout::Size::Medium

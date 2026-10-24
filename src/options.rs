@@ -21,9 +21,9 @@ pub struct Preferences {
 impl Preferences {
     pub fn encode(self) -> String {
         format!(
-            "# Enhanced Options\nRenderer = {:?}\nTextures = {:?}\nFullscreen = {}\nHudRadar = {}\nHudStatus = {}\nHudMessages = {}\n",
+            "# Enhanced Options\nRenderer = {:?}\nTextures = {:?}\nFullscreen = {}\nHudRadar = {}\nHudStatus = {}\nHudMessages = {}\nAspect = {:?}\n",
             self.render.renderer, self.render.textures, self.fullscreen,
-            self.render.hud.radar.percent(),self.render.hud.status.percent(),self.render.hud.messages.percent()
+            self.render.hud.radar.percent(),self.render.hud.status.percent(),self.render.hud.messages.percent(),self.render.aspect
         )
     }
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -46,6 +46,8 @@ impl Preferences {
                 ("Textures", "Affine") => p.render.textures = TextureMapping::Affine,
                 ("Fullscreen", "true") => p.fullscreen = true,
                 ("Fullscreen", "false") => p.fullscreen = false,
+                ("Aspect", "Original") => p.render.aspect = crate::viewport::Aspect::Original,
+                ("Aspect", "Wide") => p.render.aspect = crate::viewport::Aspect::Wide,
                 ("HudRadar", value) => p.render.hud.radar = crate::hud_layout::Size::parse(value)?,
                 ("HudStatus", value) => {
                     p.render.hud.status = crate::hud_layout::Size::parse(value)?
@@ -146,6 +148,7 @@ pub struct Menu {
     pub prefs: Preferences,
     section: Option<usize>,
     hud_page: bool,
+    graphics_page: bool,
     row: usize,
     capture: Option<bool>, // false replaces, true adds an alternative
     pub message: String,
@@ -159,6 +162,7 @@ impl Menu {
             prefs,
             section: None,
             hud_page: false,
+            graphics_page: false,
             row: 0,
             capture: None,
             message: String::new(),
@@ -169,6 +173,8 @@ impl Menu {
     fn count(&self) -> usize {
         if self.confirm_quit {
             2
+        } else if self.graphics_page {
+            3
         } else if self.hud_page {
             5
         } else {
@@ -181,6 +187,10 @@ impl Menu {
         } else if self.confirm_quit {
             self.confirm_quit = false;
             self.row = 10;
+        } else if self.graphics_page {
+            self.graphics_page = false;
+            self.row = 5;
+            self.message.clear();
         } else if self.hud_page {
             self.hud_page = false;
             self.row = 7;
@@ -202,6 +212,14 @@ impl Menu {
                 self.back()
             };
         }
+        if self.graphics_page {
+            match self.row {
+                0 => self.prefs.render.toggle_textures(),
+                1 => self.prefs.render.aspect.toggle(),
+                _ => return self.back(),
+            }
+            return Command::None;
+        }
         if self.hud_page {
             self.prefs.render.hud.change(self.row, false);
             return Command::None;
@@ -219,7 +237,10 @@ impl Menu {
                 self.row = 0;
             }
             4 => self.prefs.render.toggle_renderer(),
-            5 => self.prefs.render.toggle_textures(),
+            5 => {
+                self.graphics_page = true;
+                self.row = 0;
+            }
             6 => self.prefs.fullscreen = !self.prefs.fullscreen,
             7 => {
                 self.hud_page = true;
@@ -309,6 +330,9 @@ impl Menu {
             Some(Keycode::Down) => self.row = (self.row + 1) % self.count(),
             Some(Keycode::Escape) => return self.back(),
             Some(Keycode::Return | Keycode::KpEnter) => return self.activate(),
+            Some(Keycode::Left | Keycode::Right) if self.graphics_page && self.row < 2 => {
+                return self.activate()
+            }
             Some(Keycode::Left | Keycode::Right) if self.hud_page => {
                 self.prefs
                     .render
@@ -385,6 +409,8 @@ impl Menu {
         )?;
         let subtitle = if self.confirm_quit {
             "Quit game? Unsaved options will be discarded."
+        } else if self.graphics_page {
+            "GRAPHICS / ENHANCED RENDERER"
         } else if self.hud_page {
             "HUD SIZE / ENHANCED RENDERER"
         } else {
@@ -399,6 +425,22 @@ impl Menu {
         let rows: Vec<(String, String)> = if self.confirm_quit {
             vec![
                 ("Quit game".into(), String::new()),
+                ("Back".into(), String::new()),
+            ]
+        } else if self.graphics_page {
+            vec![
+                (
+                    "Texture style".into(),
+                    format!("{:?}", self.prefs.render.textures),
+                ),
+                (
+                    "Aspect ratio".into(),
+                    if self.prefs.render.aspect == crate::viewport::Aspect::Wide {
+                        "16:9 (experimental)".into()
+                    } else {
+                        "Original 3:2".into()
+                    },
+                ),
                 ("Back".into(), String::new()),
             ]
         } else if self.hud_page {
@@ -430,14 +472,7 @@ impl Menu {
                     "World renderer".into(),
                     format!("{:?}", self.prefs.render.renderer),
                 ),
-                (
-                    "Texture style".into(),
-                    if self.prefs.render.textures == TextureMapping::Perspective {
-                        "Perspective".into()
-                    } else {
-                        "Affine (experimental)".into()
-                    },
-                ),
+                ("Graphics".into(), ">".into()),
                 (
                     "Fullscreen".into(),
                     if self.prefs.fullscreen {
@@ -475,6 +510,8 @@ impl Menu {
         }
         let hint = if self.capture.is_some() {
             "Press a key / mouse button. Esc: cancel capture"
+        } else if self.graphics_page {
+            "Left / right: change   Enter: select   Esc: back"
         } else if self.hud_page {
             "Left / right: size   Enter: next   Esc: back"
         } else if self.section.is_some() {
@@ -483,9 +520,11 @@ impl Menu {
             "Arrows: select  Enter: change  Esc: discard"
         };
         text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
-        let message = if self.hud_page && self.message.is_empty() {
+        let message = if self.graphics_page && self.row == 1 {
+            "16:9 expands the world. Menus keep original aspect."
+        } else if self.hud_page && self.message.is_empty() {
             "Enhanced world view only. Original HUD stays at 100%."
-        } else if self.message.is_empty() && self.row == 5 && self.section.is_none() {
+        } else if self.message.is_empty() && self.graphics_page && self.row == 0 {
             "Affine: experimental PS1-style texture distortion."
         } else {
             &self.message
@@ -687,6 +726,7 @@ mod tests {
             render: Settings {
                 renderer: Renderer::Original,
                 textures: TextureMapping::Affine,
+                aspect: crate::viewport::Aspect::Wide,
                 hud: crate::hud_layout::Settings {
                     radar: crate::hud_layout::Size::Half,
                     ..Default::default()

@@ -63,7 +63,7 @@ impl Capture {
             crate::scene_replay::ppm(
                 &self.directory.join(format!("{frame:06}-enhanced.ppm")),
                 image,
-                720,
+                image.len() / 480,
                 480,
             )?;
         }

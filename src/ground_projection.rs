@@ -122,6 +122,66 @@ impl Observer {
     }
 }
 
+// USA terrain: 256x256 map cells; each cell references a 5x5 grid of
+// 8x8 indexed tiles. The GPU's small resident cache omits offscreen tiles.
+#[derive(Clone)]
+pub struct WorldGround {
+    rom: std::sync::Arc<Vec<u8>>,
+    map: usize,
+    blocks: usize,
+    atlas: usize,
+    shift: usize,
+}
+impl WorldGround {
+    pub fn capture(source: &MemMap, rom: std::sync::Arc<Vec<u8>>) -> Option<Self> {
+        if rom.get(0xac..0xb0)? != b"BGTE" {
+            return None;
+        }
+        let pointer = |o: usize| -> Option<usize> {
+            let p = u32::from_le_bytes(source.ewram.get(o..o + 4)?.try_into().ok()?);
+            if p >> 24 != 8 {
+                return None;
+            }
+            Some((p - 0x08000000) as usize)
+        };
+        let shift =
+            u32::from_le_bytes(source.ewram.get(0x1ce74..0x1ce78)?.try_into().ok()?) as usize;
+        if shift != 8 {
+            return None;
+        }
+        let result = Self {
+            rom,
+            map: pointer(0x1ce60)?,
+            blocks: pointer(0x1ce64)?,
+            atlas: pointer(0x1ce68)?,
+            shift,
+        };
+        result
+            .rom
+            .get(result.map..result.map + (1 << shift) * (1 << shift) * 2)?;
+        result.rom.get(result.blocks..result.blocks + 50)?;
+        result.rom.get(result.atlas..result.atlas + 64)?;
+        Some(result)
+    }
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
+        let (tx, ty) = (x / 8, y / 8);
+        let cells = 1 << self.shift;
+        if tx / 5 >= cells || ty / 5 >= cells {
+            return None;
+        }
+        let read = |o: usize| -> Option<usize> {
+            Some(u16::from_le_bytes(self.rom.get(o..o + 2)?.try_into().ok()?) as usize)
+        };
+        let block = read(self.map + ((ty / 5) * cells + tx / 5) * 2)?;
+        let tile = read(self.blocks + block * 50 + ((ty % 5) * 5 + tx % 5) * 2)?;
+        Some(*self.rom.get(self.atlas + tile * 64 + (y % 8) * 8 + x % 8)? as usize)
+    }
+    pub fn pixel(&self, source: &MemMap, x: i32, y: i32) -> Option<u16> {
+        let index = self.index(x, y)?;
+        (index != 0).then(|| half(&source.palette, index * 2) & 0x7fff)
+    }
+}
 // Camera world units -> texture texels: 5/8. References carry 8 fractional bits.
 pub fn delta_reference(raw_delta: i32) -> f64 {
     raw_delta as f64 * 160.0 / 65536.0
@@ -236,21 +296,47 @@ pub fn continuous_image(source: &MemMap, scale: usize, dx: i32, dy: i32) -> Vec<
         })
         .collect()
 }
+#[cfg(test)]
 pub fn continuous_layer(source: &MemMap, scale: usize, delta: [i32; 2]) -> Vec<Option<u16>> {
     continuous_layer_zoom(source, scale, delta, 1.0)
 }
+#[cfg(test)]
 pub fn continuous_layer_zoom(
     source: &MemMap,
     scale: usize,
     delta: [i32; 2],
     zoom: f64,
 ) -> Vec<Option<u16>> {
+    continuous_layer_view(
+        source,
+        crate::viewport::View::new(scale, Default::default()),
+        delta,
+        zoom,
+    )
+}
+#[cfg(test)]
+pub fn continuous_layer_view(
+    source: &MemMap,
+    view: crate::viewport::View,
+    delta: [i32; 2],
+    zoom: f64,
+) -> Vec<Option<u16>> {
+    continuous_layer_world(source, view, delta, zoom, None)
+}
+pub fn continuous_layer_world(
+    source: &MemMap,
+    view: crate::viewport::View,
+    delta: [i32; 2],
+    zoom: f64,
+    world: Option<&WorldGround>,
+) -> Vec<Option<u16>> {
+    let scale = view.scale;
     let [rx, ry, pa, pd] = continuous_parameters(source);
     let (dx, dy) = (delta_reference(delta[0]), delta_reference(delta[1]));
-    let width = 240 * scale;
+    let width = view.width;
     let xs: Vec<_> = (0..width)
         .map(|x| {
-            let sx = x as f64 / scale as f64;
+            let sx = view.source_x(x);
             let sx = if zoom == 1.0 {
                 sx
             } else {
@@ -275,8 +361,16 @@ pub fn continuous_layer_zoom(
             let mut previous_x = None;
             let mut pixel = None;
             for (x, &tx) in xs.iter().enumerate() {
-                if previous_x != Some(tx) {
-                    pixel = texel_layer(source, tx, ty);
+                if previous_x != Some(tx) || x == view.padding || x == view.padding + 240 * scale {
+                    pixel = if view.padding != 0
+                        && (x < view.padding || x >= view.padding + 240 * scale)
+                    {
+                        world
+                            .and_then(|world| world.pixel(source, tx, ty))
+                            .or_else(|| texel_layer(source, tx, ty))
+                    } else {
+                        texel_layer(source, tx, ty)
+                    };
                     previous_x = Some(tx);
                 }
                 layer[y * width + x] = pixel;
@@ -407,6 +501,78 @@ pub fn export(source: &MemMap, path: &Path) -> Result<(), Box<dyn std::error::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "local ROM and captured scene cross-check; ADVANCE_WORLD_ROM and ADVANCE_HUD_SCENES"]
+    fn world_ground_matches_resident_tiles_in_captured_gameplay() {
+        let rom = std::sync::Arc::new(
+            std::fs::read(std::env::var("ADVANCE_WORLD_ROM").unwrap()).unwrap(),
+        );
+        let directory = std::path::PathBuf::from(std::env::var("ADVANCE_HUD_SCENES").unwrap());
+        let mut checked = 0;
+        for stem in [
+            "001675", "001850", "002100", "002600", "002910", "002950", "003450",
+        ] {
+            let mut source = MemMap::new(Vec::new());
+            for (ext, target) in [
+                ("ewram", &mut source.ewram),
+                ("iwram", &mut source.iwram),
+                ("vram", &mut source.vram),
+                ("io", &mut source.io),
+                ("palette", &mut source.palette),
+            ] {
+                target.copy_from_slice(
+                    &std::fs::read(directory.join(format!("{stem}.{ext}"))).unwrap(),
+                );
+            }
+            let world = WorldGround::capture(&source, rom.clone()).unwrap();
+            let [rx, ry, pa, pd] = continuous_parameters(&source);
+            for y in 0..160 {
+                for x in 0..240 {
+                    let tx = ((rx + pa * x as f64) / 256.0).floor() as i32;
+                    let ty = ((ry + pd * y as f64) / 256.0).floor() as i32;
+                    let resident = texel_layer(&source, tx, ty);
+                    if resident.is_some() {
+                        assert_eq!(world.pixel(&source, tx, ty), resident, "{stem} {tx},{ty}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 250000);
+        println!("world_ground verified {checked} resident samples");
+    }
+    #[test]
+    fn wide_ground_center_is_identical_and_sides_use_new_world_coordinates() {
+        let mut source = MemMap::new(Vec::new());
+        source.io[0xc..0xe].copy_from_slice(&0x2080u16.to_le_bytes());
+        for (i, b) in source.vram.iter_mut().enumerate() {
+            *b = (i.wrapping_mul(71) % 256) as u8;
+        }
+        for (i, p) in source.palette.chunks_exact_mut(2).enumerate() {
+            p.copy_from_slice(&(i as u16 * 97).to_le_bytes());
+        }
+        for (o, v) in [
+            (0x14, 1000 * 65536i32),
+            (0x18, 2000 * 65536),
+            (0x68, 89544),
+            (0x6c, 89544),
+        ] {
+            source.iwram[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        for zoom in [0.95, 1.0, 1.05] {
+            let original = continuous_layer_zoom(&source, 3, [32768, -16384], zoom);
+            let wide = continuous_layer_view(&source, view, [32768, -16384], zoom);
+            for y in 0..480 {
+                for x in 0..720 {
+                    assert_eq!(
+                        original[y * 720 + x],
+                        wide[y * view.width + x + view.padding]
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn zoomed_ground_matches_scalar_world_sampling_with_camera_motion() {
         let mut source = MemMap::new(Vec::new());

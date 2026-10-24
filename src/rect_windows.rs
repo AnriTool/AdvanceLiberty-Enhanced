@@ -6,6 +6,34 @@ fn half(io: &[u8], offset: usize) -> u16 {
 mod tests {
     use super::*;
     #[test]
+    fn wide_bridge_windows_preserve_center_and_continue_clipped_deck_edges() {
+        let mut io = vec![0u8; 1024];
+        for (o, v) in [
+            (0, 0x3741u16),
+            (0x40, 0x00f0),
+            (0x44, 0x00a0),
+            (0x48, 0x17),
+            (0x4a, 0x37),
+            (0x50, 0x1044),
+            (0x52, 0x1f00),
+        ] {
+            io[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        }
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        for zoom in [0.95, 1.0, 1.05] {
+            let w = Windows::new(&io).with_view([0.25, -0.5], zoom);
+            let original = w.prepare(3);
+            let wide = w.prepare_view(view);
+            for y in 0..480 {
+                for x in 0..720 {
+                    assert_eq!(original.mask(x, y), wide.mask(x + view.padding, y));
+                }
+            }
+            assert_eq!(wide.mask(0, 240), original.mask(0, 240));
+            assert_eq!(wide.mask(853, 240), original.mask(719, 240));
+        }
+    }
+    #[test]
     fn prepared_masks_match_scalar_with_wrap_empty_overlap_and_fractional_view() {
         for flags in [0u16, 0x2000, 0x4000, 0x6000] {
             for ranges in [
@@ -120,14 +148,19 @@ impl Windows {
         self.zoom = zoom;
         self
     }
+    #[cfg(test)]
     pub fn prepare(&self, scale: usize) -> PreparedWindows {
-        let axis = |length: usize, ranges: [u16; 2], shift: f64| {
+        self.prepare_view(crate::viewport::View::new(scale, Default::default()))
+    }
+    pub fn prepare_view(&self, view: crate::viewport::View) -> PreparedWindows {
+        let scale = view.scale;
+        let axis = |length: usize, count: usize, offset: f64, ranges: [u16; 2], shift: f64| {
             if self.enabled == 0 {
                 return Vec::new();
             }
-            (0..length * scale)
+            (0..count)
                 .map(|p| {
-                    let mut value = p as f64 / scale as f64;
+                    let mut value = p as f64 / scale as f64 - offset;
                     if self.world_bridge {
                         value = (120.0 + (value - 120.0) / self.zoom + shift)
                             .clamp(0.0, length as f64 - 1e-9);
@@ -143,8 +176,14 @@ impl Windows {
                 .collect()
         };
         PreparedWindows {
-            horizontal: axis(240, self.horizontal, self.shift[0]),
-            vertical: axis(160, self.vertical, self.shift[1]),
+            horizontal: axis(
+                240,
+                view.width,
+                view.offset(),
+                self.horizontal,
+                self.shift[0],
+            ),
+            vertical: axis(160, view.height, 0.0, self.vertical, self.shift[1]),
             values: [self.outside, self.inside[0], self.inside[1], self.inside[0]],
             world_bridge: self.world_bridge,
         }

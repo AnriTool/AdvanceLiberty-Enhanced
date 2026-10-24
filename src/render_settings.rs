@@ -16,6 +16,7 @@ pub struct Settings {
     pub renderer: Renderer,
     pub textures: TextureMapping,
     pub hud: crate::hud_layout::Settings,
+    pub aspect: crate::viewport::Aspect,
 }
 impl Settings {
     pub fn toggle_renderer(&mut self) {
