@@ -309,9 +309,9 @@ impl Capture {
     pub fn append_missing_geometry(&mut self, side: &Self) -> usize {
         // The side pass preserves the native painter order. Insert missing faces
         // around shared anchors rather than painting every edge building last.
-        let original = std::mem::take(&mut self.faces);
+        let mut original = std::mem::take(&mut self.faces);
         let keys = std::mem::take(&mut self.material_keys);
-        let inferred = std::mem::take(&mut self.inferred);
+        let mut inferred = std::mem::take(&mut self.inferred);
         let mut ordered: Vec<(bool, usize)> = Vec::new();
         let mut pending = Vec::new();
         let mut cursor = 0;
@@ -319,6 +319,29 @@ impl Capture {
         for (index, face) in side.faces.iter().enumerate() {
             let anchor = original.iter().position(|f| same_face(f, face));
             if let Some(anchor) = anchor {
+                // A shared face can be clipped out of the guest material pass
+                // while its precise geometry still covers host pixels. Preserve
+                // the original painter anchor, but fill a missing atlas/UV pair
+                // from the same face and material in the wider pass.
+                let target = &mut original[anchor];
+                if self.wide
+                    && target.texture.is_empty()
+                    && !face.texture.is_empty()
+                    && target.input.size == face.input.size
+                    && target.input.color == face.input.color
+                    && target.input.uv == face.input.uv
+                    && keys
+                        .get(&anchor)
+                        .is_some_and(|key| side.material_keys.get(&index) == Some(key))
+                {
+                    target.texture = face.texture.clone();
+                    for (vertex, source) in target.vertices.iter_mut().zip(&face.vertices) {
+                        vertex[3..5].copy_from_slice(&source[3..5]);
+                    }
+                    if side.inferred.contains(&index) {
+                        inferred.insert(anchor);
+                    }
+                }
                 if anchor >= cursor {
                     ordered.extend((cursor..anchor).map(|i| (false, i)));
                     ordered.extend(pending.drain(..).map(|i| (true, i)));
@@ -1226,6 +1249,55 @@ mod tests {
         assert_eq!(main.faces[index].texture[0], 7);
         assert_eq!(&main.faces[index].vertices[0][3..], &[12., 34.]);
         assert!(!main.inferred.contains(&index));
+    }
+
+    #[test]
+    fn wide_geometry_merge_fills_a_shared_clipped_material_with_its_uv_pair() {
+        let key = (0x08420668, 0x08424668, true, false);
+        let mut main = Capture::default();
+        main.wide = true;
+        main.push(
+            vec![
+                [-33., -68., 180.],
+                [33., -68., 180.],
+                [33., 69., 180.],
+                [-33., 69., 180.],
+            ],
+            Input {
+                source: 0x08dbfc4c,
+                color: 7,
+                size: 128,
+                uv: vec![[127., 0.], [63., 0.], [63., 127.], [127., 127.]],
+            },
+        );
+        main.material_keys.insert(0, key);
+        let mut side = main.clone();
+        side.faces[0].texture = Arc::new(vec![9; 16384]);
+        for vertex in &mut side.faces[0].vertices {
+            let [u, v] = [vertex[3], vertex[4]];
+            vertex[3] = 127. - v;
+            vertex[4] = u;
+        }
+        side.inferred.insert(0);
+        let mut wrong_material = side.clone();
+        wrong_material
+            .material_keys
+            .insert(0, (key.0, key.1, false, false));
+        assert_eq!(main.append_missing_geometry(&wrong_material), 0);
+        assert!(main.faces[0].texture.is_empty());
+        assert_eq!(main.append_missing_geometry(&side), 0);
+        assert_eq!(main.faces.len(), 1);
+        assert_eq!(main.faces[0].texture[0], 9);
+        assert_eq!(main.faces[0].vertices, side.faces[0].vertices);
+        assert!(main.inferred.contains(&0));
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        assert!(main
+            .live_layer_view(
+                [0; 3],
+                view,
+                crate::render_settings::TextureMapping::Perspective
+            )
+            .is_ok());
     }
 
     #[test]

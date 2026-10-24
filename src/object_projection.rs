@@ -475,17 +475,16 @@ impl Observer {
         fork.cpu.regs[15] = 0x08013550;
         fork.cpu.regs[14] = 0x08000001;
         crate::scene_replay::presentation_span(&mut fork, 0x08000001)?;
-        fork.bus.oam[127 * 8..127 * 8 + 6].copy_from_slice(&attrs);
-        let a1 = u16::from_le_bytes(attrs[2..4].try_into().unwrap());
         if attrs[1] & 1 != 0 {
-            let matrix = word(&fork, owner + 52)? as u32;
-            let data = bytes(&fork, matrix, 8)?.to_vec();
-            let group = ((a1 >> 9) & 31) as usize * 32;
-            for i in 0..4 {
-                fork.bus.oam[group + 6 + i * 8..group + 8 + i * 8]
-                    .copy_from_slice(&data[i * 2..i * 2 + 2]);
-            }
+            // attr1 selects the actual affine group. Shots use shared group 0,
+            // even when owner+52 points to a newly allocated private record.
+            // Let the native upload prepare both shared and private matrices;
+            // copying owner+52 into group 0 can collapse the sprite to one texel.
+            fork.cpu.regs[15] = 0x08012ff8;
+            fork.cpu.regs[14] = 0x08000001;
+            crate::scene_replay::presentation_span(&mut fork, 0x08000001)?;
         }
+        fork.bus.oam[127 * 8..127 * 8 + 6].copy_from_slice(&attrs);
         let Some(mut sprite) = Sprite::read(&fork.bus, 127)? else {
             return Ok(None);
         };
