@@ -30,6 +30,8 @@ mod ground_projection;
 mod native_audit;
 mod native_host;
 mod object_projection;
+#[cfg(feature = "desktop")]
+mod options;
 mod rect_windows;
 mod render_settings;
 mod save;
@@ -195,6 +197,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    #[cfg(feature = "desktop")]
+    let override_renderer = args.iter().any(|s| s == "--original-renderer");
+    #[cfg(feature = "desktop")]
+    let override_textures = args.iter().any(|s| s == "--affine-textures");
     let mut render_settings = render_settings::Settings::default();
     if let Some(i) = args.iter().position(|s| s == "--original-renderer") {
         args.remove(i);
@@ -531,6 +537,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "desktop")]
     let texture_creator = desktop.as_ref().map(|ui| ui.texture_creator());
     #[cfg(feature = "desktop")]
+    if let Some(ui) = desktop.as_ref() {
+        let saved = ui.initial_render_settings();
+        if !override_renderer {
+            render_settings.renderer = saved.renderer;
+        }
+        if !override_textures {
+            render_settings.textures = saved.textures;
+        }
+    }
+    #[cfg(feature = "desktop")]
     let mut textures = texture_creator.as_ref().map(desktop::Textures::new);
     let mut api = RtApi {
         guard,
@@ -583,6 +599,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 m.bus.keys = keys;
             }
             if ui.paused() {
+                ui.present_paused(textures.as_mut().unwrap())?;
                 ui.update_status(
                     coverage(selected.iter().sum(), misses, rejected_fallback),
                     force_interpreter,

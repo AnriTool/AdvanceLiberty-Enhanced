@@ -54,6 +54,7 @@ pub enum Mode {
     Enhanced,
 }
 
+#[derive(Clone)]
 pub struct Controls {
     keys: [Vec<Binding>; 10],
     mode: Mode,
@@ -277,6 +278,82 @@ impl Controls {
         })
     }
 
+    pub fn actions(section: usize) -> &'static [&'static str] {
+        match section {
+            0 => &ACTIONS,
+            1 => &FOOT,
+            _ => &VEHICLE,
+        }
+    }
+    pub fn bindings(&self, section: usize, row: usize) -> &[Binding] {
+        match section {
+            0 => &self.keys[row],
+            1 => &self.foot[row],
+            _ => &self.vehicle[row],
+        }
+    }
+    pub fn binding_name(key: Binding) -> &'static str {
+        match key {
+            Binding::Key(code) => code.name(),
+            Binding::MouseLeft => "MouseLeft",
+            Binding::MouseMiddle => "MouseMiddle",
+            Binding::MouseRight => "MouseRight",
+        }
+    }
+    pub fn binding_text(&self, section: usize, row: usize) -> String {
+        let names: Vec<_> = self
+            .bindings(section, row)
+            .iter()
+            .map(|&b| Self::binding_name(b))
+            .collect();
+        if names.is_empty() {
+            "None".into()
+        } else {
+            names.join(", ")
+        }
+    }
+    pub fn encode(&self) -> String {
+        let mut text = format!(
+            "# Native options; SDL physical key names.\nMode = {:?}\n",
+            self.mode
+        );
+        for (section, name) in ["GBA", "OnFoot", "Vehicle"].iter().enumerate() {
+            text.push_str(&format!("\n[{name}]\n"));
+            for (row, action) in Self::actions(section).iter().enumerate() {
+                text.push_str(&format!("{action} = {}\n", self.binding_text(section, row)));
+            }
+        }
+        text
+    }
+    // Validate a complete candidate before changing any profile. In particular,
+    // reserved keys and conflicts use exactly the same rules as file loading.
+    pub fn rebind(
+        &mut self,
+        section: usize,
+        row: usize,
+        key: Option<Binding>,
+        add: bool,
+    ) -> Result<(), String> {
+        if section > 2 || row >= Self::actions(section).len() {
+            return Err("Unknown action".into());
+        }
+        let mut candidate = self.clone();
+        let keys = match section {
+            0 => &mut candidate.keys[row],
+            1 => &mut candidate.foot[row],
+            _ => &mut candidate.vehicle[row],
+        };
+        if !add {
+            keys.clear();
+        }
+        if let Some(key) = key {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        *self = Self::parse(&candidate.encode())?;
+        Ok(())
+    }
     pub fn mode(&self) -> Mode {
         self.mode
     }

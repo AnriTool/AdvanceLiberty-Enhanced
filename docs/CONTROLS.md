@@ -2,7 +2,8 @@
 
 Enhanced на клавиатуре/мыши включён в `data/config/controls.cfg`.
 F8 временно переключает Enhanced/Classic, независимо от рендера F6.
-Для постоянного выбора измените `Mode = Enhanced` на `Mode = Classic`.
+Для постоянного выбора используйте **Esc → Enhanced Options → Control mode → Save and return**
+или измените `Mode = Enhanced` на `Mode = Classic`.
 F5 перечитывает файл, при ошибке сохраняется предыдущая рабочая настройка.
 
 ## Привязки

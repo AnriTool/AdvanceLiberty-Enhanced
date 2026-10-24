@@ -17,6 +17,7 @@ pub struct Textures<'a> {
     creator: &'a TextureCreator<WindowContext>,
     original: Option<Texture<'a>>,
     preview: Option<Texture<'a>>,
+    menu: Option<Texture<'a>>,
     allocations: u64,
 }
 impl<'a> Textures<'a> {
@@ -25,8 +26,20 @@ impl<'a> Textures<'a> {
             creator,
             original: None,
             preview: None,
+            menu: None,
             allocations: 0,
         }
+    }
+    fn menu(&mut self) -> Result<&mut Texture<'a>, String> {
+        if self.menu.is_none() {
+            self.menu = Some(
+                self.creator
+                    .create_texture_streaming(PixelFormatEnum::RGB24, 720, 480)
+                    .map_err(|e| e.to_string())?,
+            );
+            self.allocations += 1;
+        }
+        Ok(self.menu.as_mut().unwrap())
     }
     fn get(&mut self, preview: bool) -> Result<&mut Texture<'a>, String> {
         let slot = if preview {
@@ -55,6 +68,9 @@ pub struct Desktop {
     pixels: Vec<u8>,
     paused: bool,
     focused: bool,
+    menu: Option<crate::options::Menu>,
+    release_input: bool,
+    preferences_path: std::path::PathBuf,
     next_frame: Instant,
     controls: crate::controls::Controls,
     input_latch: crate::controls::InputLatch,
@@ -84,6 +100,12 @@ fn rgb(pixel: u16) -> [u8; 3] {
 
 impl Desktop {
     pub fn new(controls_path: std::path::PathBuf) -> Result<Self, String> {
+        let preferences_path = controls_path.with_file_name("enhanced.cfg");
+        let preferences =
+            crate::options::Preferences::load(&preferences_path).unwrap_or_else(|e| {
+                eprintln!("Enhanced Options: {e}; using presentation defaults");
+                Default::default()
+            });
         let sdl = sdl2::init()?;
         let controls = crate::controls::Controls::open(&controls_path)?;
         eprintln!(
@@ -114,6 +136,11 @@ impl Desktop {
         canvas
             .set_logical_size(240, 160)
             .map_err(|e| e.to_string())?;
+        if preferences.fullscreen {
+            canvas
+                .window_mut()
+                .set_fullscreen(sdl2::video::FullscreenType::Desktop)?;
+        }
         let events = sdl.event_pump()?;
         let audio = (|| {
             let subsystem = sdl.audio()?;
@@ -141,7 +168,7 @@ impl Desktop {
             title_initialized: false,
             notice: "",
             preview_status: "",
-            render_settings: crate::render_settings::Settings::default(),
+            render_settings: preferences.render,
             renderer_available: false,
             gamepad,
             controls,
@@ -154,6 +181,9 @@ impl Desktop {
             pixels: vec![0; 240 * 160 * 3],
             paused: false,
             focused: true,
+            menu: None,
+            release_input: false,
+            preferences_path,
             next_frame: Instant::now(),
             present_frames: 0,
             present_ns: 0,
@@ -164,7 +194,7 @@ impl Desktop {
     }
 
     pub fn paused(&self) -> bool {
-        self.paused || !self.focused
+        self.paused || !self.focused || self.menu.is_some()
     }
     pub fn update_status(
         &mut self,
@@ -212,7 +242,69 @@ impl Desktop {
         context: crate::control_context::Context,
     ) -> Result<Option<u16>, String> {
         self.renderer_available = renderer_available;
-        for event in self.events.poll_iter() {
+        let events: Vec<_> = self.events.poll_iter().collect();
+        for event in events {
+            if matches!(event, Event::Quit { .. }) {
+                return Ok(None);
+            }
+            if let Event::Window { win_event, .. } = event {
+                match win_event {
+                    WindowEvent::FocusLost => self.focused = false,
+                    WindowEvent::FocusGained => self.focused = true,
+                    _ => {}
+                }
+            }
+            if self.menu.is_some() {
+                if !self.focused {
+                    continue;
+                }
+                let command = self.menu.as_mut().unwrap().event(&event);
+                match command {
+                    crate::options::Command::None => {}
+                    crate::options::Command::Quit => return Ok(None),
+                    crate::options::Command::Close => {
+                        self.menu = None;
+                        self.release_input = true;
+                    }
+                    crate::options::Command::Save => {
+                        if let Err(e) = self.save_options(settings) {
+                            eprintln!("Cannot save Enhanced Options: {e}");
+                            let menu = self.menu.as_mut().unwrap();
+                            menu.message = format!("Save failed: {e}");
+                            menu.invalidate();
+                        } else {
+                            self.menu = None;
+                            self.release_input = true;
+                        }
+                    }
+                }
+                continue;
+            }
+            if self.release_input {
+                continue;
+            }
+            if matches!(
+                event,
+                Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    repeat: false,
+                    ..
+                } | Event::ControllerButtonDown {
+                    button: sdl2::controller::Button::Guide,
+                    ..
+                }
+            ) {
+                self.menu = Some(crate::options::Menu::new(
+                    self.controls.clone(),
+                    crate::options::Preferences {
+                        render: *settings,
+                        fullscreen: self.canvas.window().fullscreen_state()
+                            != sdl2::video::FullscreenType::Off,
+                    },
+                ));
+                self.title_initialized = false;
+                continue;
+            }
             match event {
                 Event::KeyDown {
                     keycode: Some(Keycode::F6),
@@ -224,11 +316,7 @@ impl Desktop {
                         self.title_initialized = false;
                     }
                 }
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => return Ok(None),
+                Event::Quit { .. } => return Ok(None),
                 Event::KeyDown {
                     keycode: Some(Keycode::F8),
                     repeat: false,
@@ -301,6 +389,18 @@ impl Desktop {
         }
         let keyboard = self.events.keyboard_state();
         let mouse = self.events.mouse_state();
+        if self.release_input {
+            // Consume held menu/capture buttons in both profiles and on gamepads.
+            // Resume actions only after a physical release, even in Classic mode.
+            self.release_input = keyboard.pressed_scancodes().next().is_some()
+                || mouse.pressed_mouse_buttons().next().is_some()
+                || self
+                    .gamepad
+                    .as_ref()
+                    .is_some_and(|pad| pad.buttons() != 0x3ff);
+            self.input_latch = Default::default();
+            return Ok(Some(0x3ff));
+        }
         Ok(Some(crate::gamepad::merge(
             self.input_latch
                 .sample(&self.controls, context, |binding| match binding {
@@ -311,6 +411,58 @@ impl Desktop {
                 }),
             self.gamepad.as_ref().map_or(0x3ff, |pad| pad.buttons()),
         )))
+    }
+
+    pub fn initial_render_settings(&self) -> crate::render_settings::Settings {
+        self.render_settings
+    }
+
+    fn save_options(
+        &mut self,
+        settings: &mut crate::render_settings::Settings,
+    ) -> Result<(), String> {
+        let menu = self.menu.as_ref().unwrap();
+        let old = self.canvas.window().fullscreen_state();
+        let next = if menu.prefs.fullscreen {
+            sdl2::video::FullscreenType::Desktop
+        } else {
+            sdl2::video::FullscreenType::Off
+        };
+        self.canvas.window_mut().set_fullscreen(next)?;
+        if let Err(e) = crate::options::save(
+            &self.controls_path,
+            &self.preferences_path,
+            &menu.controls,
+            menu.prefs,
+        ) {
+            let _ = self.canvas.window_mut().set_fullscreen(old);
+            return Err(e);
+        }
+        self.controls = menu.controls.clone();
+        *settings = menu.prefs.render;
+        self.render_settings = *settings;
+        self.title_initialized = false;
+        eprintln!(
+            "Enhanced Options saved: {}",
+            self.preferences_path.display()
+        );
+        Ok(())
+    }
+    pub fn present_paused(&mut self, textures: &mut Textures<'_>) -> Result<(), String> {
+        if let Some(menu) = &mut self.menu {
+            menu.draw(&mut self.canvas, textures.menu()?)?;
+        } else {
+            let preview = self.pixels.len() == 720 * 480 * 3;
+            let (width, height) = if preview { (720, 480) } else { (240, 160) };
+            self.canvas
+                .set_logical_size(width, height)
+                .map_err(|e| e.to_string())?;
+            self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
+            self.canvas.clear();
+            self.canvas.copy(textures.get(preview)?, None, None)?;
+            self.canvas.present();
+        }
+        Ok(())
     }
 
     pub fn set_preview_status(&mut self, status: &'static str) {
@@ -349,7 +501,7 @@ impl Desktop {
             (240, 160)
         };
         let samples = &source.audio_buf;
-        if self.pixels.len() != width as usize * height as usize * 3 {
+        if self.canvas.logical_size() != (width, height) {
             self.canvas
                 .set_logical_size(width, height)
                 .map_err(|e| e.to_string())?;
@@ -400,6 +552,141 @@ impl Desktop {
 mod tests {
     use super::*;
     use sdl2::keyboard::Scancode;
+    #[test]
+    #[ignore = "run alone with SDL dummy/software to verify native menu output and persistence"]
+    fn options_menu_real_sdl() {
+        use crate::control_context::Context;
+        let directory = std::env::temp_dir().join(format!("options-sdl-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("controls.cfg");
+        let original = crate::controls::Controls::default_file();
+        std::fs::write(&path, &original).unwrap();
+        let mut ui = Desktop::new(path.clone()).unwrap();
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let events = ui._sdl.event().unwrap();
+        let mut settings = ui.initial_render_settings();
+        let mut source = gba_core::MemMap::new(Vec::new());
+        source.framebuffer.fill(31 << 10);
+        ui.present(&source, None, &mut textures).unwrap();
+        let send =
+            |ui: &mut Desktop, settings: &mut crate::render_settings::Settings, k: Keycode| {
+                events
+                    .push_event(Event::KeyDown {
+                        timestamp: 0,
+                        window_id: ui.canvas.window().id(),
+                        keycode: Some(k),
+                        scancode: Scancode::from_keycode(k),
+                        keymod: sdl2::keyboard::Mod::NOMOD,
+                        repeat: false,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    ui.poll(settings, true, Context::OnFoot).unwrap(),
+                    Some(0x3ff)
+                );
+            };
+        let capture = |ui: &Desktop, name: &str| {
+            if let Ok(dir) = std::env::var("GTA_OPTIONS_CAPTURE") {
+                let (w, h) = ui.canvas.output_size().unwrap();
+                let mut bytes = format!("P6\n{w} {h}\n255\n").into_bytes();
+                bytes.extend(ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap());
+                std::fs::write(std::path::Path::new(&dir).join(name), bytes).unwrap();
+            }
+        };
+        send(&mut ui, &mut settings, Keycode::Escape);
+        assert!(ui.paused());
+        ui.present_paused(&mut textures).unwrap();
+        capture(&ui, "root.ppm");
+        for k in [Keycode::Down, Keycode::Down, Keycode::Return] {
+            send(&mut ui, &mut settings, k);
+        }
+        for _ in 0..6 {
+            send(&mut ui, &mut settings, Keycode::Down);
+        }
+        send(&mut ui, &mut settings, Keycode::Return); // capture Jump
+        send(&mut ui, &mut settings, Keycode::J); // conflict
+        ui.present_paused(&mut textures).unwrap();
+        capture(&ui, "conflict.ppm");
+        assert_eq!(ui.controls.binding_text(1, 6), "Space");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        send(&mut ui, &mut settings, Keycode::C); // valid replacement
+        ui.present_paused(&mut textures).unwrap();
+        capture(&ui, "bindings.ppm");
+        send(&mut ui, &mut settings, Keycode::Escape); // root; selected on-foot row 2
+        for _ in 0..2 {
+            send(&mut ui, &mut settings, Keycode::Down);
+        }
+        send(&mut ui, &mut settings, Keycode::Return); // renderer original, draft only
+        assert_eq!(
+            settings.renderer,
+            crate::render_settings::Renderer::Enhanced
+        );
+        for _ in 0..3 {
+            send(&mut ui, &mut settings, Keycode::Down);
+        }
+        // A failed save leaves the menu open and active settings untouched.
+        ui.preferences_path = directory.join("missing/enhanced.cfg");
+        send(&mut ui, &mut settings, Keycode::Return);
+        assert!(ui.paused());
+        assert!(ui
+            .menu
+            .as_ref()
+            .unwrap()
+            .message
+            .starts_with("Save failed:"));
+        assert_eq!(ui.controls.binding_text(1, 6), "Space");
+        assert_eq!(
+            settings.renderer,
+            crate::render_settings::Renderer::Enhanced
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        ui.preferences_path = directory.join("enhanced.cfg");
+        send(&mut ui, &mut settings, Keycode::Return); // save
+        assert!(!ui.paused());
+        assert_eq!(
+            settings.renderer,
+            crate::render_settings::Renderer::Original
+        );
+        assert_eq!(ui.controls.binding_text(1, 6), "C");
+        // Restore original resolution after drawing the 720x480 menu.
+        ui.present(&source, None, &mut textures).unwrap();
+        assert_eq!(ui.canvas.logical_size(), (240, 160));
+        assert!(ui
+            .canvas
+            .read_pixels(None, PixelFormatEnum::RGB24)
+            .unwrap()
+            .chunks_exact(3)
+            .all(|rgb| rgb == [0, 0, 255]));
+        // Cancel another edited draft; no active state or file changes.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        send(&mut ui, &mut settings, Keycode::Escape);
+        send(&mut ui, &mut settings, Keycode::Return); // control mode
+        send(&mut ui, &mut settings, Keycode::Escape); // discard
+        assert_eq!(ui.controls.mode(), crate::controls::Mode::Enhanced);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // P-paused game must redraw its cached frame when the menu closes.
+        ui.paused = true;
+        send(&mut ui, &mut settings, Keycode::Escape);
+        ui.present_paused(&mut textures).unwrap();
+        send(&mut ui, &mut settings, Keycode::Escape);
+        ui.present_paused(&mut textures).unwrap();
+        assert!(ui.menu.is_none());
+        assert!(ui.paused());
+        drop(textures);
+        drop(creator);
+        drop(events);
+        drop(ui);
+        let ui = Desktop::new(path).unwrap();
+        assert_eq!(
+            ui.initial_render_settings().renderer,
+            crate::render_settings::Renderer::Original
+        );
+        assert_eq!(ui.controls.binding_text(1, 6), "C");
+        drop(ui);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     #[ignore = "run alone with SDL dummy/software to exercise the real event queue and output"]
     fn f_keys_switch_real_sdl_output_and_reuse_textures() {

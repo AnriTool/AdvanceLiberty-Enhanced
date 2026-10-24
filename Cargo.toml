@@ -23,3 +23,7 @@ sdl2 = { version = "0.38.0", features = ["bundled", "static-link"], optional = t
 [features]
 default = ["desktop"]
 desktop = ["dep:sdl2"]
+
+[[example]]
+name = "verify-controls"
+required-features = ["desktop"]

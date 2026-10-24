@@ -33,6 +33,6 @@ if (!$NoRecord) {
 }
 Write-Host "Save: $SavePath"
 Write-Host "Controls: $ControlsPath"
-Write-Host 'Enhanced renderer enabled. F6: Enhanced/Original; F11: fullscreen; Esc: quit.'
+Write-Host 'Esc: Enhanced Options (settings / quit). F6: renderer; F8: controls; F11: fullscreen. Saved options are loaded on startup.'
 & $exe $Rom '-' $Frames '-' play @libraries --save $SavePath --controls $ControlsPath @runtimeOptions
 if ($LASTEXITCODE -ne 0) { throw "Game exited with error $LASTEXITCODE." }
