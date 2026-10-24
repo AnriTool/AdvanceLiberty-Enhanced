@@ -166,6 +166,7 @@ impl MotionRoots {
         let iw = |offset| i32::from_le_bytes(source.iwram[offset..offset + 4].try_into().unwrap());
         Some(MotionAnchor {
             identity: [b.parent, b.position],
+            world: world.map(|v| v as f64 / 65536.0),
             vehicle: b.vehicle,
             screen: std::array::from_fn(|i| {
                 axis(
@@ -183,6 +184,7 @@ impl MotionRoots {
 #[derive(Clone, Copy)]
 struct MotionAnchor {
     identity: [u32; 2],
+    world: [f64; 2],
     screen: [f64; 2],
     vehicle: bool,
 }
@@ -1243,6 +1245,15 @@ impl Snapshot {
                     }
                 }
             }
+            let translation: [f64; 2] = std::array::from_fn(|i| {
+                (a[i] - b[i]) * (1.0 - alpha) + s.slope[i] * delta[i] as f64 / 65536.0
+            });
+            if let (Some(old_motion), Some(motion)) = (old.motion, s.motion.as_mut()) {
+                motion.screen = std::array::from_fn(|i| motion.screen[i] + translation[i]);
+                motion.world = std::array::from_fn(|i| {
+                    old_motion.world[i] + (motion.world[i] - old_motion.world[i]) * alpha
+                });
+            }
             s.correction = std::array::from_fn(|i| {
                 // A checked actor root may translate across pose changes.
                 // The latest bitmap and all its local offsets stay together.
@@ -1304,10 +1315,36 @@ impl Snapshot {
                 let xy = [sprite.x, sprite.y][i] as f64;
                 120.0 + (xy + sprite.correction[i] - 120.0) * zoom - xy
             });
+            if let Some(m) = sprite.motion.as_mut() {
+                m.screen = m.screen.map(|v| 120.0 + (v - 120.0) * zoom);
+            }
             sprite.slope = sprite.slope.map(|v| v * zoom);
             sprite.zoom *= zoom;
         }
         result
+    }
+    pub fn aim_projection(
+        &self,
+        actor: u32,
+        delta: [i32; 2],
+        view: crate::viewport::View,
+    ) -> Option<crate::mouse_aim::Projection> {
+        let sprite = self.sprites.iter().find(|s| {
+            s.motion
+                .is_some_and(|m| m.identity[0] == actor && !m.vehicle)
+                && s.slope.iter().all(|v| *v > 0.0)
+        })?;
+        let motion = sprite.motion?;
+        Some(crate::mouse_aim::Projection {
+            actor,
+            world: motion.world,
+            screen: std::array::from_fn(|i| {
+                (motion.screen[i] - sprite.slope[i] * delta[i] as f64 / 65536.0) * view.scale as f64
+                    + if i == 0 { view.padding as f64 } else { 0.0 }
+            }),
+            pixels_per_world: sprite.slope.map(|v| v * view.scale as f64),
+            size: [view.width as u32, view.height as u32],
+        })
     }
     fn pixel(&self, x: f64, y: f64, delta: i32, continuous: bool) -> Option<(u16, u16, usize)> {
         self.sprites
@@ -1764,6 +1801,44 @@ mod tests {
         assert_eq!(pixels[0], Some(31));
     }
     #[test]
+    fn aim_root_follows_presented_interpolation_zoom_and_wide_padding() {
+        let bus = MemMap::new(Vec::new());
+        let mut sprite = Sprite::read(&bus, 0).unwrap().unwrap();
+        sprite.node = 0x0201cec0;
+        sprite.owner = 0x02002550;
+        sprite.generation = 1;
+        sprite.slope = [2.0; 2];
+        sprite.motion = Some(MotionAnchor {
+            identity: [1, 2],
+            screen: [110.0, 80.0],
+            world: [90.0, 200.0],
+            vehicle: false,
+        });
+        let old = Snapshot::new(vec![sprite.clone()], &bus);
+        sprite.motion.as_mut().unwrap().screen = [130.0, 80.0];
+        sprite.motion.as_mut().unwrap().world = [110.0, 200.0];
+        let new = Snapshot::new(vec![sprite], &bus);
+        let delta = [65536, 131072];
+        let shown = new.interpolate(&old, 0.25, delta).zoomed(1.25);
+        let p = shown
+            .aim_projection(
+                1,
+                delta,
+                crate::viewport::View::new(3, crate::viewport::Aspect::Wide),
+            )
+            .unwrap();
+        assert_eq!(p.world, [95.0, 200.0]);
+        assert_eq!(p.screen, [408.25, 210.0]);
+        assert_eq!(p.pixels_per_world, [7.5, 7.5]);
+        assert!(shown
+            .aim_projection(
+                3,
+                delta,
+                crate::viewport::View::new(3, crate::viewport::Aspect::Wide)
+            )
+            .is_none());
+    }
+    #[test]
     fn side_sprite_and_oam_sprite_interpolate_only_with_same_checked_actor_root() {
         let bus = MemMap::new(Vec::new());
         let mut a = Sprite::read(&bus, 0).unwrap().unwrap();
@@ -1773,6 +1848,7 @@ mod tests {
         a.slope = [1.; 2];
         a.motion = Some(MotionAnchor {
             identity: [0x02004000, 0x02004100],
+            world: [0.0; 2],
             screen: [10., 20.],
             vehicle: false,
         });
@@ -2359,6 +2435,7 @@ mod tests {
         world.pixels = Arc::new(vec![Some(0x1234); 64]);
         world.motion = Some(MotionAnchor {
             identity: [1, 2],
+            world: [0.0; 2],
             screen: [130.0; 2],
             vehicle: false,
         });

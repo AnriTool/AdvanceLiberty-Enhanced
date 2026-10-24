@@ -11,6 +11,8 @@ pub struct Session {
     input: BufWriter<File>,
     frames: BufWriter<File>,
     previous_keys: Option<u16>,
+    aim: Option<BufWriter<File>>,
+    previous_aim: Option<u16>,
 }
 
 impl Session {
@@ -46,6 +48,8 @@ impl Session {
             input,
             frames,
             previous_keys: None,
+            aim: None,
+            previous_aim: None,
         })
     }
 
@@ -58,6 +62,26 @@ impl Session {
             writeln!(self.input, "{frame} {keys:03x}")?;
             self.previous_keys = Some(keys);
         }
+        Ok(())
+    }
+    pub fn aim(&mut self, frame: u64, angle: Option<u16>) -> io::Result<()> {
+        if self.aim.is_none() && angle.is_some() {
+            let mut aim = BufWriter::new(File::create_new(self.directory.join("aim.gba-aim"))?);
+            writeln!(aim, "gba-aim v1")?;
+            if frame != 0 {
+                writeln!(aim, "0 none")?;
+            }
+            self.aim = Some(aim);
+        }
+        if let Some(out) = self.aim.as_mut() {
+            if angle != self.previous_aim {
+                match angle {
+                    Some(a) => writeln!(out, "{frame} {a}")?,
+                    None => writeln!(out, "{frame} none")?,
+                }
+            }
+        }
+        self.previous_aim = angle;
         Ok(())
     }
 
@@ -78,6 +102,9 @@ impl Session {
 
     fn flush(&mut self) -> io::Result<()> {
         self.input.flush()?;
+        if let Some(aim) = self.aim.as_mut() {
+            aim.flush()?;
+        }
         self.frames.flush()
     }
 
@@ -112,12 +139,22 @@ mod tests {
         session.input(0, 0x3ff).unwrap();
         session.input(1, 0x3ff).unwrap();
         session.input(2, 0x3fe).unwrap();
-        session.finish(3, 10, 2).unwrap();
+        session.aim(0, None).unwrap();
+        assert!(!directory.join("aim.gba-aim").exists());
+        session.aim(1, Some(256)).unwrap();
+        session.aim(2, Some(256)).unwrap();
+        session.aim(3, Some(128)).unwrap();
+        session.aim(4, None).unwrap();
+        session.finish(5, 10, 2).unwrap();
         assert_eq!(
             fs::read_to_string(directory.join("input.gba-input")).unwrap(),
             "gba-input v1\n0 3ff\n2 3fe\n"
         );
         assert!(Session::open(directory.clone(), &m, "test.gba", &[]).is_err());
+        assert_eq!(
+            crate::mouse_aim::load(&directory.join("aim.gba-aim")).unwrap(),
+            vec![(0, None), (1, Some(256)), (3, Some(128)), (4, None)]
+        );
         assert!(fs::read_to_string(directory.join("summary.txt"))
             .unwrap()
             .contains("interpreted_steps=2"));

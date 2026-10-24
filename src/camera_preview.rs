@@ -163,6 +163,7 @@ pub struct Preview {
     previous: Option<Scene>,
     history: VecDeque<Scene>,
     presented_scene: Option<u64>,
+    aim_projection: Option<crate::mouse_aim::Projection>,
     presentation_floor: f64,
     epochs: HashMap<u32, u64>,
     epoch: u64,
@@ -195,6 +196,9 @@ pub struct Preview {
     camera_frames: Option<std::fs::File>,
 }
 impl Preview {
+    pub fn aim_projection(&self) -> Option<crate::mouse_aim::Projection> {
+        self.aim_projection
+    }
     pub fn diagnostic_graphics(&self) -> Option<&MemMap> {
         self.history
             .iter()
@@ -277,6 +281,7 @@ impl Preview {
             previous: None,
             history: VecDeque::new(),
             presented_scene: None,
+            aim_projection: None,
             presentation_floor: 0.0,
             epochs: HashMap::new(),
             epoch: 0,
@@ -317,6 +322,7 @@ impl Preview {
         Ok(())
     }
     fn discard_scene(&mut self) {
+        self.aim_projection = None;
         self.pending = None;
         self.current = None;
         self.previous = None;
@@ -622,6 +628,7 @@ impl Preview {
         bus: &MemMap,
         settings: crate::render_settings::Settings,
     ) -> Option<Vec<u16>> {
+        self.aim_projection = None;
         self.wide = settings.aspect == crate::viewport::Aspect::Wide;
         if self.last_settings != Some(settings) {
             self.event(bus.frames, "settings", &format!("{settings:?}"));
@@ -737,6 +744,7 @@ impl Preview {
         );
         let scene_frame = pair.map_or(0, |p| p.0.frame);
         let mut rendered_time = time;
+        let mut aim_projection = None;
         let result = pair.map(|(scene, old_scene, mut alpha)| {
             let mut shift = if let Some(old) = old_scene {
                 delta(old.camera, scene.camera, alpha)
@@ -830,6 +838,9 @@ impl Preview {
             if let Some(latest) = &self.current {
                 objects.use_hud_from(&latest.objects);
             }
+            if let Some((actor, _, _)) = crate::mouse_aim::player(bus) {
+                aim_projection = objects.aim_projection(actor, shift, viewport);
+            }
             if let Some(f) = self.sprite_presented.as_mut() {
                 objects.trace_anchors(bus.frames, shift, f);
             }
@@ -870,6 +881,7 @@ impl Preview {
         }
         match result {
             Some(Ok((image, blended, reset))) => {
+                self.aim_projection = aim_projection;
                 if reset {
                     // Never move the presentation clock backwards after an
                     // emergency clamp to a fully captured source camera.

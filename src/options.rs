@@ -178,7 +178,8 @@ impl Menu {
         } else if self.hud_page {
             5
         } else {
-            self.section.map_or(11, |s| Controls::actions(s).len())
+            self.section
+                .map_or(11, |s| Controls::actions(s).len() + usize::from(s == 1))
         }
     }
     fn back(&mut self) -> Command {
@@ -222,6 +223,10 @@ impl Menu {
         }
         if self.hud_page {
             self.prefs.render.hud.change(self.row, false);
+            return Command::None;
+        }
+        if self.section == Some(1) && self.row == Controls::actions(1).len() {
+            self.controls.toggle_mouse_aim();
             return Command::None;
         }
         if self.section.is_some() {
@@ -330,6 +335,15 @@ impl Menu {
             Some(Keycode::Down) => self.row = (self.row + 1) % self.count(),
             Some(Keycode::Escape) => return self.back(),
             Some(Keycode::Return | Keycode::KpEnter) => return self.activate(),
+            Some(
+                Keycode::Left
+                | Keycode::Right
+                | Keycode::Insert
+                | Keycode::Delete
+                | Keycode::Backspace,
+            ) if self.section == Some(1) && self.row == Controls::actions(1).len() => {
+                return self.activate();
+            }
             Some(Keycode::Left | Keycode::Right) if self.graphics_page && self.row < 2 => {
                 return self.activate()
             }
@@ -457,11 +471,23 @@ impl Menu {
                 ("Reset HUD sizes".into(), String::new()),
             ]
         } else if let Some(section) = self.section {
-            Controls::actions(section)
+            let mut rows: Vec<_> = Controls::actions(section)
                 .iter()
                 .enumerate()
                 .map(|(i, a)| (label(a).into(), self.controls.binding_text(section, i)))
-                .collect()
+                .collect();
+            if section == 1 {
+                rows.push((
+                    "Mouse aim (exp.)".into(),
+                    if self.controls.mouse_aim_setting() {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                    .into(),
+                ));
+            }
+            rows
         } else {
             vec![
                 ("Control mode".into(), format!("{:?}", self.controls.mode())),
@@ -508,7 +534,10 @@ impl Menu {
                 2,
             )?;
         }
-        let hint = if self.capture.is_some() {
+        let aim_row = self.section == Some(1) && self.row == Controls::actions(1).len();
+        let hint = if aim_row {
+            "Enter / left / right: toggle   Esc: back"
+        } else if self.capture.is_some() {
             "Press a key / mouse button. Esc: cancel capture"
         } else if self.graphics_page {
             "Left / right: change   Enter: select   Esc: back"
@@ -519,8 +548,18 @@ impl Menu {
         } else {
             "Arrows: select  Enter: change  Esc: discard"
         };
-        text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
-        let message = if self.graphics_page && self.row == 1 {
+        let extra_row = self.section == Some(1);
+        text(
+            canvas,
+            38,
+            if extra_row { 407 } else { 392 },
+            hint,
+            Color::RGB(169, 192, 208),
+            2,
+        )?;
+        let message = if aim_row {
+            "Face cursor; WASD moves freely. Enhanced on foot only"
+        } else if self.graphics_page && self.row == 1 {
             "16:9 expands the world. Menus keep original aspect."
         } else if self.hud_page && self.message.is_empty() {
             "Enhanced world view only. Original HUD stays at 100%."
@@ -534,7 +573,7 @@ impl Menu {
             text(
                 canvas,
                 38,
-                420 + i as i32 * 17,
+                (if extra_row { 434 } else { 420 }) + i as i32 * 17,
                 &line.iter().collect::<String>(),
                 Color::RGB(255, 184, 113),
                 2,

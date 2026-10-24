@@ -58,6 +58,7 @@ pub enum Mode {
 pub struct Controls {
     keys: [Vec<Binding>; 10],
     mode: Mode,
+    mouse_aim: bool,
     foot: [Vec<Binding>; 11],
     vehicle: [Vec<Binding>; 11],
 }
@@ -215,6 +216,7 @@ impl Controls {
         ]
         .map(|s| binding(s, 0, true).unwrap());
         let mut mode = Mode::Classic; // Existing ten-button files retain their original behavior.
+        let mut mouse_aim = false;
         let mut seen = HashSet::new();
         let mut section = 0usize;
         for (line, raw) in text.lines().enumerate() {
@@ -248,6 +250,14 @@ impl Controls {
                 };
                 continue;
             }
+            if action.eq_ignore_ascii_case("MouseAim") && section == 0 {
+                mouse_aim = match names.trim().to_ascii_lowercase().as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(error("MouseAim must be true or false")),
+                };
+                continue;
+            }
             let actions = match section {
                 0 => ACTIONS.as_slice(),
                 1 => FOOT.as_slice(),
@@ -273,6 +283,7 @@ impl Controls {
         Ok(Self {
             keys,
             mode,
+            mouse_aim,
             foot,
             vehicle,
         })
@@ -314,8 +325,8 @@ impl Controls {
     }
     pub fn encode(&self) -> String {
         let mut text = format!(
-            "# Native options; SDL physical key names.\nMode = {:?}\n",
-            self.mode
+            "# Native options; SDL physical key names.\nMode = {:?}\nMouseAim = {}\n",
+            self.mode, self.mouse_aim
         );
         for (section, name) in ["GBA", "OnFoot", "Vehicle"].iter().enumerate() {
             text.push_str(&format!("\n[{name}]\n"));
@@ -356,6 +367,15 @@ impl Controls {
     }
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+    pub fn mouse_aim(&self) -> bool {
+        self.mode == Mode::Enhanced && self.mouse_aim
+    }
+    pub fn mouse_aim_setting(&self) -> bool {
+        self.mouse_aim
+    }
+    pub fn toggle_mouse_aim(&mut self) {
+        self.mouse_aim = !self.mouse_aim;
     }
     pub fn toggle_mode(&mut self) -> Result<(), String> {
         validate_profile("OnFoot", &FOOT, &self.foot)?;
@@ -462,6 +482,24 @@ impl Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn aim_setting_roundtrips_without_changing_buttons_and_classic_disables_it() {
+        let mut controls = Controls::parse(&Controls::default_file()).unwrap();
+        assert!(!controls.mouse_aim());
+        let held = |b| matches!(b, Binding::Key(Scancode::W | Scancode::J));
+        let old = controls.input(Context::OnFoot, held);
+        controls.toggle_mouse_aim();
+        assert!(controls.mouse_aim());
+        assert_eq!(controls.input(Context::OnFoot, held), old);
+        let mut reloaded = Controls::parse(&controls.encode()).unwrap();
+        assert!(reloaded.mouse_aim());
+        reloaded.toggle_mode().unwrap();
+        assert!(!reloaded.mouse_aim());
+        assert!(reloaded.mouse_aim_setting());
+        assert!(
+            Controls::parse(&format!("MouseAim = unknown\n{}", Controls::default_file())).is_err()
+        );
+    }
     #[test]
     fn sprint_ignores_fire_but_preserves_explicit_jump_and_classic_combinations() {
         let mut controls = Controls::parse(&Controls::default_file()).unwrap();

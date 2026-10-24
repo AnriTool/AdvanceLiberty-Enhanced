@@ -28,6 +28,7 @@ mod frame_capture;
 mod gamepad;
 mod ground_projection;
 mod hud_layout;
+mod mouse_aim;
 mod native_audit;
 mod native_host;
 mod object_projection;
@@ -186,6 +187,16 @@ fn coverage(native_dispatches: u64, misses: u64, rejected: u64) -> coverage::Cov
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let aim_path = if let Some(i) = args.iter().position(|s| s == "--aim-input") {
+        if i + 1 >= args.len() {
+            return Err("--aim-input requires FILE.gba-aim".into());
+        }
+        let path = std::path::PathBuf::from(args.remove(i + 1));
+        args.remove(i);
+        Some(path)
+    } else {
+        None
+    };
     let mut control_trace = if let Some(i) = args.iter().position(|s| s == "--control-state") {
         if i + 1 >= args.len() {
             return Err("--control-state requires NEW_FILE.csv".into());
@@ -467,6 +478,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         input(&args[1])?
     };
+    let aim_path = aim_path.or_else(|| {
+        if args[1] == "-" {
+            return None;
+        }
+        let path = std::path::Path::new(&args[1]).with_file_name("aim.gba-aim");
+        path.exists().then_some(path)
+    });
+    let aim_keys = aim_path.as_ref().map(|p| mouse_aim::load(p)).transpose()?;
+    if (force_interpreter || mode == "interp") && aim_keys.is_some() {
+        return Err("Mouse aim replay requires native multi/single mode".into());
+    }
     let rom = fs::read(&args[0])?;
     if rom.len() != 16 * 1024 * 1024 || &rom[0xac..0xb0] != b"BGTE" {
         return Err("Expected GTA Advance USA ROM".into());
@@ -567,6 +589,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut api = RtApi {
         guard,
         interp_one: interp,
+        read32: mouse_aim::read32,
         ..RT_API
     };
     let camera_enabled = camera_options.is_some();
@@ -591,10 +614,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     let start = std::time::Instant::now();
     while m.bus.frames < frames {
+        mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
         let i = keys.partition_point(|&(f, _)| f <= before);
         m.bus.keys = if i == 0 { 0x3ff } else { keys[i - 1].1 };
         let control_context = control_context::detect(&m.bus);
+        let mut aim_angle = aim_keys.as_ref().and_then(|points| {
+            let i = points.partition_point(|&(f, _)| f <= before);
+            i.checked_sub(1).and_then(|i| points[i].1)
+        });
         if let Some(trace) = control_trace.as_mut() {
             use std::io::Write;
             writeln!(
@@ -622,9 +650,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
                 continue;
             }
+            if args[1] == "-" && !force_interpreter {
+                aim_angle = ui.aim_angle(&m.bus);
+            }
         }
+        // Resolve and validate the current actor on every host frame. Hooks
+        // cannot affect vehicle physics or any other object's direction.
+        mouse_aim::set(&m.bus, aim_angle);
         if let Some(recording) = recording.as_mut() {
             recording.input(before, m.bus.keys)?;
+            recording.aim(before, aim_angle)?;
         }
         if mode == "interp" || force_interpreter {
             m.run_frame(5_000_000);
@@ -775,6 +810,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_preview_status(camera_preview.as_ref().map(|p| p.status()).unwrap_or(""));
             ui.set_render_settings(render_settings, preview_enabled);
             ui.present(&m.bus, preview_image.as_deref(), textures.as_mut().unwrap())?;
+            ui.set_aim_projection(if preview_image.is_some() {
+                camera_preview.as_ref().and_then(|p| p.aim_projection())
+            } else {
+                mouse_aim::Projection::original(&m.bus)
+            });
             ui.update_status(
                 coverage(selected.iter().sum(), misses, rejected_fallback),
                 force_interpreter,

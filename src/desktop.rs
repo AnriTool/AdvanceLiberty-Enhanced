@@ -70,6 +70,9 @@ pub struct Desktop {
     _sdl: sdl2::Sdl,
     pixels: Vec<u8>,
     frame_size: (u32, u32),
+    aim_projection: Option<crate::mouse_aim::Projection>,
+    aim_cursor: Option<[f64; 2]>,
+    last_aim: Option<(u32, u16)>,
     paused: bool,
     focused: bool,
     menu: Option<crate::options::Menu>,
@@ -188,6 +191,9 @@ impl Desktop {
             _sdl: sdl,
             pixels: vec![0; 240 * 160 * 3],
             frame_size: (240, 160),
+            aim_projection: None,
+            aim_cursor: None,
+            last_aim: None,
             paused: false,
             focused: true,
             menu: None,
@@ -387,6 +393,7 @@ impl Desktop {
         self.render_settings = *settings;
         let keyboard = self.events.keyboard_state();
         let mouse = self.events.mouse_state();
+        self.aim_cursor = None;
         let releasing_input = self.release_input;
         if releasing_input {
             // Consume held menu/capture buttons in both profiles and on gamepads.
@@ -398,6 +405,34 @@ impl Desktop {
                     .as_ref()
                     .is_some_and(|pad| pad.buttons() != 0x3ff);
             self.input_latch = Default::default();
+        }
+        if !self.paused()
+            && !releasing_input
+            && self.controls.mouse_aim()
+            && context == crate::control_context::Context::OnFoot
+            && self
+                .gamepad
+                .as_ref()
+                .is_none_or(|pad| pad.buttons() == 0x3ff)
+            && self.canvas.window().window_flags()
+                & sdl2::sys::SDL_WindowFlags::SDL_WINDOW_MOUSE_FOCUS as u32
+                != 0
+        {
+            let (mut x, mut y) = (0.0f32, 0.0f32);
+            // GetMouseState is in window units; SDL accounts for viewport,
+            // letterboxing and the renderer's HiDPI output scale here.
+            unsafe {
+                sdl2::sys::SDL_RenderWindowToLogical(
+                    self.canvas.raw(),
+                    mouse.x(),
+                    mouse.y(),
+                    &mut x,
+                    &mut y,
+                );
+            }
+            self.aim_cursor = Some([x as f64, y as f64]);
+        } else {
+            self.last_aim = None;
         }
         if self.paused() {
             self.fps_started = Instant::now();
@@ -427,6 +462,29 @@ impl Desktop {
 
     pub fn initial_render_settings(&self) -> crate::render_settings::Settings {
         self.render_settings
+    }
+    pub fn set_aim_projection(&mut self, projection: Option<crate::mouse_aim::Projection>) {
+        self.aim_projection = projection;
+    }
+    pub fn aim_angle(&mut self, bus: &gba_core::MemMap) -> Option<u16> {
+        if self.paused() || self.release_input || !self.controls.mouse_aim() {
+            self.last_aim = None;
+            return None;
+        }
+        let (actor, _, world) = crate::mouse_aim::player(bus)?;
+        let p = self.aim_projection?;
+        let cursor = self.aim_cursor?;
+        if actor != p.actor || (0..2).any(|i| cursor[i] < 0.0 || cursor[i] >= p.size[i] as f64) {
+            self.last_aim = None;
+            return None;
+        }
+        let angle = p.angle(actor, world, cursor).or_else(|| {
+            self.last_aim
+                .filter(|&(a, _)| a == actor)
+                .map(|(_, angle)| angle)
+        });
+        self.last_aim = angle.map(|angle| (actor, angle));
+        angle
     }
 
     fn save_options(
@@ -766,6 +824,131 @@ mod tests {
             ui.initial_render_settings().hud.messages,
             crate::hud_layout::Size::Large
         );
+        drop(ui);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "run alone with SDL dummy/software to exercise the real event queue and output"]
+    fn mouse_aim_options_and_viewport_real_sdl() {
+        use crate::control_context::Context;
+        let directory = std::env::temp_dir().join(format!("mouse-aim-sdl-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("controls.cfg");
+        let mut ui = Desktop::new(path.clone()).unwrap();
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let events = ui._sdl.event().unwrap();
+        let mut settings = ui.initial_render_settings();
+        let send = |ui: &mut Desktop, settings: &mut crate::render_settings::Settings, key| {
+            events
+                .push_event(Event::KeyDown {
+                    timestamp: 0,
+                    window_id: ui.canvas.window().id(),
+                    keycode: Some(key),
+                    scancode: sdl2::keyboard::Scancode::from_keycode(key),
+                    keymod: sdl2::keyboard::Mod::NOMOD,
+                    repeat: false,
+                })
+                .unwrap();
+            ui.poll(settings, true, Context::OnFoot).unwrap();
+        };
+        // Exercise the real menu queue, including last-row navigation/capture.
+        for save in [false, true] {
+            send(&mut ui, &mut settings, Keycode::Escape);
+            send(&mut ui, &mut settings, Keycode::Down);
+            send(&mut ui, &mut settings, Keycode::Down);
+            send(&mut ui, &mut settings, Keycode::Return);
+            send(&mut ui, &mut settings, Keycode::Up); // wraps to the new last row
+            send(&mut ui, &mut settings, Keycode::Return);
+            assert!(ui.menu.as_ref().unwrap().controls.mouse_aim());
+            ui.present_paused(&mut textures).unwrap();
+            if let Ok(dir) = std::env::var("GTA_OPTIONS_CAPTURE") {
+                let (w, h) = ui.canvas.output_size().unwrap();
+                let mut bytes = format!("P6\n{w} {h}\n255\n").into_bytes();
+                bytes.extend(ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap());
+                std::fs::write(
+                    std::path::Path::new(&dir).join("mouse-aim-options.ppm"),
+                    bytes,
+                )
+                .unwrap();
+            }
+            send(&mut ui, &mut settings, Keycode::Escape);
+            if save {
+                for _ in 0..6 {
+                    send(&mut ui, &mut settings, Keycode::Down);
+                }
+                send(&mut ui, &mut settings, Keycode::Return);
+            } else {
+                send(&mut ui, &mut settings, Keycode::Escape);
+            }
+            assert_eq!(ui.controls.mouse_aim(), save);
+            ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        }
+        assert!(crate::controls::Controls::load(&path).unwrap().mouse_aim());
+        // SDL's own coordinate transform accounts for black bars and resizing.
+        for (w, h) in [(240, 160), (720, 480), (854, 480)] {
+            ui.canvas.set_logical_size(w, h).unwrap();
+            let (mut wx, mut wy) = (0, 0);
+            let (mut lx, mut ly) = (0.0, 0.0);
+            unsafe {
+                sdl2::sys::SDL_RenderLogicalToWindow(
+                    ui.canvas.raw(),
+                    w as f32 * 0.7,
+                    h as f32 * 0.3,
+                    &mut wx,
+                    &mut wy,
+                );
+                sdl2::sys::SDL_RenderWindowToLogical(ui.canvas.raw(), wx, wy, &mut lx, &mut ly);
+            }
+            assert!((lx - w as f32 * 0.7).abs() < 1.5);
+            assert!((ly - h as f32 * 0.3).abs() < 1.5);
+        }
+        // Feed a checked actor and the displayed projection through the same
+        // cursor-to-heading path used by main, then exercise its stop gates.
+        let mut rom = vec![0; 0x200];
+        rom[0xac..0xb0].copy_from_slice(b"BGTE");
+        rom[0x100..0x104].copy_from_slice(&2u32.to_le_bytes());
+        let mut bus = gba_core::MemMap::new(rom);
+        bus.io[..2].copy_from_slice(&0x1741u16.to_le_bytes());
+        for (address, value) in [
+            (0xf10, 0x02001000u32),
+            (0x1008, 2),
+            (0x1010, 0x08000100),
+            (0x1018, 0x02002000),
+            (0x101c, 0x02002100),
+            (0x2100, 0x02002000),
+            (0x2130, 0x02001000),
+            (0x2000, 100 * 65536),
+            (0x2004, 100 * 65536),
+        ] {
+            bus.ewram[address..address + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        ui.set_aim_projection(Some(crate::mouse_aim::Projection {
+            actor: 0x02001000,
+            screen: [427.0, 240.0],
+            world: [100.0, 100.0],
+            pixels_per_world: [3.0; 2],
+            size: [854, 480],
+        }));
+        ui.aim_cursor = Some([487.0, 180.0]);
+        assert_eq!(ui.aim_angle(&bus), Some(128));
+        ui.aim_cursor = Some([427.0, 240.0]);
+        assert_eq!(ui.aim_angle(&bus), Some(128)); // near the actor: retain heading
+        ui.aim_cursor = Some([900.0, 240.0]);
+        assert_eq!(ui.aim_angle(&bus), None); // outside the actual world viewport
+        ui.aim_cursor = Some([487.0, 240.0]);
+        ui.focused = false;
+        assert_eq!(ui.aim_angle(&bus), None);
+        ui.focused = true;
+        ui.controls.toggle_mode().unwrap();
+        assert_eq!(ui.aim_angle(&bus), None);
+        drop(textures);
+        drop(creator);
+        drop(events);
+        drop(ui);
+        let ui = Desktop::new(path).unwrap();
+        assert!(ui.controls.mouse_aim());
         drop(ui);
         std::fs::remove_dir_all(directory).unwrap();
     }
