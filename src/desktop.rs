@@ -385,6 +385,20 @@ impl Desktop {
             }
         }
         self.render_settings = *settings;
+        let keyboard = self.events.keyboard_state();
+        let mouse = self.events.mouse_state();
+        let releasing_input = self.release_input;
+        if releasing_input {
+            // Consume held menu/capture buttons in both profiles and on gamepads.
+            // Check releases even during P-pause, or its resume key stays blocked.
+            self.release_input = keyboard.pressed_scancodes().next().is_some()
+                || mouse.pressed_mouse_buttons().next().is_some()
+                || self
+                    .gamepad
+                    .as_ref()
+                    .is_some_and(|pad| pad.buttons() != 0x3ff);
+            self.input_latch = Default::default();
+        }
         if self.paused() {
             self.fps_started = Instant::now();
             self.fps_frames = 0;
@@ -396,18 +410,7 @@ impl Desktop {
             std::thread::sleep(Duration::from_millis(10));
             return Ok(Some(0x3ff));
         }
-        let keyboard = self.events.keyboard_state();
-        let mouse = self.events.mouse_state();
-        if self.release_input {
-            // Consume held menu/capture buttons in both profiles and on gamepads.
-            // Resume actions only after a physical release, even in Classic mode.
-            self.release_input = keyboard.pressed_scancodes().next().is_some()
-                || mouse.pressed_mouse_buttons().next().is_some()
-                || self
-                    .gamepad
-                    .as_ref()
-                    .is_some_and(|pad| pad.buttons() != 0x3ff);
-            self.input_latch = Default::default();
+        if releasing_input {
             return Ok(Some(0x3ff));
         }
         Ok(Some(crate::gamepad::merge(
@@ -714,14 +717,33 @@ mod tests {
         send(&mut ui, &mut settings, Keycode::Escape); // discard
         assert_eq!(ui.controls.mode(), crate::controls::Mode::Enhanced);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
-        // P-paused game must redraw its cached frame when the menu closes.
-        ui.paused = true;
-        send(&mut ui, &mut settings, Keycode::Escape);
-        ui.present_paused(&mut textures).unwrap();
-        send(&mut ui, &mut settings, Keycode::Escape);
-        ui.present_paused(&mut textures).unwrap();
-        assert!(ui.menu.is_none());
-        assert!(ui.paused());
+        // Closing options must preserve P-pause and still let P resume input.
+        for save in [false, true] {
+            send(&mut ui, &mut settings, Keycode::P);
+            assert!(ui.paused());
+            send(&mut ui, &mut settings, Keycode::Escape);
+            ui.present_paused(&mut textures).unwrap();
+            if save {
+                for _ in 0..8 {
+                    send(&mut ui, &mut settings, Keycode::Down);
+                }
+                send(&mut ui, &mut settings, Keycode::Return);
+            } else {
+                send(&mut ui, &mut settings, Keycode::Escape);
+            }
+            ui.present_paused(&mut textures).unwrap();
+            assert!(ui.menu.is_none());
+            assert!(ui.paused());
+            ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+            send(&mut ui, &mut settings, Keycode::P);
+            assert!(
+                !ui.paused(),
+                "P must resume after options close (save={save})"
+            );
+            send(&mut ui, &mut settings, Keycode::Escape);
+            assert!(ui.menu.is_some(), "Menu hotkeys must work after resuming");
+            send(&mut ui, &mut settings, Keycode::Escape);
+        }
         drop(textures);
         drop(creator);
         drop(events);
