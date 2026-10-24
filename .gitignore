@@ -6,3 +6,4 @@
 /native/usa/*.c
 /native/usa/coverage/*.csv
 __pycache__/
+/languages/en.json

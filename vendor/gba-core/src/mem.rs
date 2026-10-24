@@ -121,6 +121,9 @@ pub struct MemMap {
     pub vram: Vec<u8>,
     pub oam: Vec<u8>,
     pub rom: Vec<u8>,
+    /// Physical cartridge size, independent of host-only appended text/font data.
+    /// EEPROM decoding must retain the original cartridge's address lines.
+    cartridge_rom_len: usize,
     pub sram: Vec<u8>,
 
     /// Master cycle counter.
@@ -249,6 +252,7 @@ impl MemMap {
             vram: self.vram.clone(),
             oam: self.oam.clone(),
             rom: self.rom.clone(),
+            cartridge_rom_len: self.cartridge_rom_len,
             sram: self.sram.clone(),
             clock: self.clock.clone(),
             reg_ie: self.reg_ie.clone(),
@@ -320,6 +324,7 @@ impl MemMap {
             palette: vec![0; 0x400],
             vram: vec![0; 0x1_8000],
             oam: vec![0; 0x400],
+            cartridge_rom_len: rom.len(),
             rom,
             sram: vec![0xFF; 0x1_0000],
             clock: 0,
@@ -418,7 +423,7 @@ impl MemMap {
     fn is_eeprom_addr(&self, addr: u32) -> bool {
         self.eeprom.is_some()
             && addr >> 24 == 0x0D
-            && (self.rom.len() <= 0x100_0000 || addr & 0x01FF_FF00 == 0x01FF_FF00)
+            && (self.cartridge_rom_len <= 0x100_0000 || addr & 0x01FF_FF00 == 0x01FF_FF00)
     }
 
     /// True when `addr` hits the cartridge GPIO port (0x080000C4..C9, in any
@@ -1593,6 +1598,20 @@ impl Bus for MemMap {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eeprom_address_lines_survive_host_rom_extensions_and_research_forks() {
+        let mut small = super::MemMap::new(vec![0; 16 * 1024 * 1024]);
+        small.eeprom = Some(crate::backup::Eeprom::new());
+        assert!(small.is_eeprom_addr(0x0d000000));
+        small.rom.resize(17 * 1024 * 1024, 0);
+        assert!(small.is_eeprom_addr(0x0d000000));
+        let fork = small.try_fork_for_research().unwrap();
+        assert!(fork.is_eeprom_addr(0x0d000000));
+        let mut large = super::MemMap::new(vec![0; 32 * 1024 * 1024]);
+        large.eeprom = Some(crate::backup::Eeprom::new());
+        assert!(!large.is_eeprom_addr(0x0d000000));
+        assert!(large.is_eeprom_addr(0x0dffff00));
+    }
     use super::*;
 
     #[test]

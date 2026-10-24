@@ -13,17 +13,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub render: Settings,
     pub fullscreen: bool,
+    pub language: Option<String>,
 }
 impl Preferences {
-    pub fn encode(self) -> String {
+    pub fn encode(&self) -> String {
         format!(
-            "# Enhanced Options\nRenderer = {:?}\nTextures = {:?}\nFullscreen = {}\nHudRadar = {}\nHudStatus = {}\nHudMessages = {}\nAspect = {:?}\n",
+            "# Enhanced Options\nRenderer = {:?}\nTextures = {:?}\nFullscreen = {}\nHudRadar = {}\nHudStatus = {}\nHudMessages = {}\nAspect = {:?}\nLanguage = {}\n",
             self.render.renderer, self.render.textures, self.fullscreen,
-            self.render.hud.radar.percent(),self.render.hud.status.percent(),self.render.hud.messages.percent(),self.render.aspect
+            self.render.hud.radar.percent(),self.render.hud.status.percent(),self.render.hud.messages.percent(),self.render.aspect,
+            self.language.as_deref().unwrap_or("Original")
         )
     }
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -40,6 +42,10 @@ impl Preferences {
                 return Err(format!("Duplicate setting: {key}"));
             }
             match (key, value) {
+                ("Language", "Original") => p.language = None,
+                ("Language", value) if crate::localization::valid_file_name(value) => {
+                    p.language = Some(value.to_owned())
+                }
                 ("Renderer", "Enhanced") => p.render.renderer = Renderer::Enhanced,
                 ("Renderer", "Original") => p.render.renderer = Renderer::Original,
                 ("Textures", "Perspective") => p.render.textures = TextureMapping::Perspective,
@@ -97,17 +103,19 @@ pub fn save(
     controls_path: &Path,
     prefs_path: &Path,
     controls: &Controls,
-    prefs: Preferences,
+    prefs: &Preferences,
 ) -> Result<(), String> {
     let encoded = controls.encode();
     Controls::parse(&encoded)?;
+    let presentation = prefs.encode();
+    Preferences::parse(&presentation)?;
     let old = match fs::read(prefs_path) {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.to_string()),
     };
     let a = staged(controls_path, &encoded)?;
-    let b = match staged(prefs_path, &prefs.encode()) {
+    let b = match staged(prefs_path, &presentation) {
         Ok(p) => p,
         Err(e) => {
             let _ = fs::remove_file(a);
@@ -149,6 +157,8 @@ pub struct Menu {
     section: Option<usize>,
     hud_page: bool,
     graphics_page: bool,
+    language_page: bool,
+    languages: Vec<crate::localization::Choice>,
     row: usize,
     capture: Option<bool>, // false replaces, true adds an alternative
     pub message: String,
@@ -163,6 +173,8 @@ impl Menu {
             section: None,
             hud_page: false,
             graphics_page: false,
+            language_page: false,
+            languages: Vec::new(),
             row: 0,
             capture: None,
             message: String::new(),
@@ -170,31 +182,47 @@ impl Menu {
             cached: None,
         }
     }
+    pub fn with_languages(mut self, languages: Vec<crate::localization::Choice>) -> Self {
+        self.languages = languages;
+        self
+    }
+    fn language_label(&self) -> String {
+        self.prefs
+            .language
+            .as_ref()
+            .and_then(|file| self.languages.iter().find(|choice| &choice.file == file))
+            .map_or_else(
+                || "Original game / ROM".into(),
+                |choice| choice.label.clone(),
+            )
+    }
     fn count(&self) -> usize {
         if self.confirm_quit {
             2
+        } else if self.language_page {
+            self.languages.len() + 2
         } else if self.graphics_page {
             3
         } else if self.hud_page {
             5
         } else {
             self.section
-                .map_or(11, |s| Controls::actions(s).len() + usize::from(s == 1))
+                .map_or(12, |s| Controls::actions(s).len() + usize::from(s == 1))
         }
     }
     fn first_row(&self) -> usize {
-        if self.section.is_some() {
-            self.row.saturating_sub(10)
-        } else {
-            0
-        }
+        self.row.saturating_sub(10)
     }
     fn back(&mut self) -> Command {
         if self.capture.take().is_some() {
             self.message.clear();
         } else if self.confirm_quit {
             self.confirm_quit = false;
-            self.row = 10;
+            self.row = 11;
+        } else if self.language_page {
+            self.language_page = false;
+            self.row = 8;
+            self.message.clear();
         } else if self.graphics_page {
             self.graphics_page = false;
             self.row = 5;
@@ -219,6 +247,17 @@ impl Menu {
             } else {
                 self.back()
             };
+        }
+        if self.language_page {
+            if self.row == self.languages.len() + 1 {
+                return self.back();
+            }
+            self.prefs.language = self
+                .row
+                .checked_sub(1)
+                .map(|i| self.languages[i].file.clone());
+            self.message = "Language selected. Save, then restart the game.".into();
+            return Command::None;
         }
         if self.graphics_page {
             match self.row {
@@ -258,9 +297,18 @@ impl Menu {
                 self.hud_page = true;
                 self.row = 0;
             }
-            8 => return Command::Save,
-            9 => return Command::Close,
-            10 => {
+            8 => {
+                self.language_page = true;
+                self.row = self
+                    .prefs
+                    .language
+                    .as_ref()
+                    .and_then(|file| self.languages.iter().position(|c| &c.file == file))
+                    .map_or(0, |i| i + 1);
+            }
+            9 => return Command::Save,
+            10 => return Command::Close,
+            11 => {
                 self.confirm_quit = true;
                 self.row = 1;
             }
@@ -431,6 +479,8 @@ impl Menu {
         )?;
         let subtitle = if self.confirm_quit {
             "Quit game? Unsaved options will be discarded."
+        } else if self.language_page {
+            "LANGUAGE / APPLIES ON NEXT LAUNCH"
         } else if self.graphics_page {
             "GRAPHICS / ENHANCED RENDERER"
         } else if self.hud_page {
@@ -449,6 +499,36 @@ impl Menu {
                 ("Quit game".into(), String::new()),
                 ("Back".into(), String::new()),
             ]
+        } else if self.language_page {
+            let mut rows = vec![(
+                "Original game / ROM".into(),
+                if self.prefs.language.is_none() {
+                    "Selected".into()
+                } else {
+                    String::new()
+                },
+            )];
+            rows.extend(self.languages.iter().map(|choice| {
+                let name = choice
+                    .label
+                    .rsplit_once(" (")
+                    .map_or(choice.label.as_str(), |(name, _)| name);
+                let label = if name.chars().count() > 21 {
+                    format!("{}...", name.chars().take(18).collect::<String>())
+                } else {
+                    name.to_owned()
+                };
+                (
+                    label,
+                    if self.prefs.language.as_ref() == Some(&choice.file) {
+                        format!("Selected: {}", choice.file)
+                    } else {
+                        choice.file.clone()
+                    },
+                )
+            }));
+            rows.push(("Back".into(), String::new()));
+            rows
         } else if self.graphics_page {
             vec![
                 (
@@ -516,6 +596,7 @@ impl Menu {
                     },
                 ),
                 ("HUD size".into(), ">".into()),
+                ("Language".into(), self.language_label()),
                 ("Save and return".into(), String::new()),
                 ("Discard and return".into(), String::new()),
                 ("Quit game...".into(), String::new()),
@@ -532,19 +613,48 @@ impl Menu {
             } else {
                 Color::RGB(230, 237, 239)
             };
-            text(canvas, 40, y + 5, label, color, 2)?;
-            text(
+            let font = if self.language_page {
+                i.checked_sub(1)
+                    .and_then(|index| self.languages.get(index))
+                    .map(|c| &c.font)
+            } else if !self.graphics_page
+                && !self.hud_page
+                && !self.confirm_quit
+                && self.section.is_none()
+                && i == 8
+            {
+                self.prefs
+                    .language
+                    .as_ref()
+                    .and_then(|file| self.languages.iter().find(|c| &c.file == file))
+                    .map(|c| &c.font)
+            } else {
+                None
+            };
+            text_with_font(
+                canvas,
+                40,
+                y + 5,
+                label,
+                color,
+                2,
+                if self.language_page { font } else { None },
+            )?;
+            text_with_font(
                 canvas,
                 302,
                 y + 5,
                 &value.chars().take(31).collect::<String>(),
                 color,
                 2,
+                font,
             )?;
         }
         let aim_row = self.section == Some(1) && self.row == Controls::actions(1).len();
         let hint = if aim_row {
             "Enter / left / right: toggle   Esc: back"
+        } else if self.language_page {
+            "Enter: select language   Esc: back"
         } else if self.capture.is_some() {
             "Press a key / mouse button. Esc: cancel capture"
         } else if self.graphics_page {
@@ -557,7 +667,9 @@ impl Menu {
             "Arrows: select  Enter: change  Esc: discard"
         };
         text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
-        let message = if aim_row {
+        let message = if self.language_page && self.message.is_empty() {
+            "Packs: languages/*.json. Save, then restart the game."
+        } else if aim_row {
             "Hold Aim to face cursor. Default: right mouse button."
         } else if self.graphics_page && self.row == 1 {
             "16:9 expands the world. Menus keep original aspect."
@@ -601,6 +713,17 @@ fn label(action: &str) -> &str {
 }
 // Small original 5x7 font. No ROM assets, SDL_ttf or external font files needed.
 fn glyph(c: char) -> [u8; 7] {
+    let c = match c {
+        '—' | '–' => '-',
+        'à' | 'á' | 'ä' | 'À' | 'Á' | 'Ä' => 'A',
+        'è' | 'é' | 'È' | 'É' => 'E',
+        'ì' | 'í' | 'Ì' | 'Í' => 'I',
+        'ò' | 'ó' | 'ö' | 'Ò' | 'Ó' | 'Ö' => 'O',
+        'ù' | 'ú' | 'ü' | 'Ù' | 'Ú' | 'Ü' => 'U',
+        'ñ' | 'Ñ' => 'N',
+        'ç' | 'Ç' => 'C',
+        _ => c,
+    };
     match c.to_ascii_uppercase() {
         'A' => [14, 17, 17, 31, 17, 17, 17],
         'B' => [30, 17, 17, 30, 17, 17, 30],
@@ -666,9 +789,25 @@ fn text<T: sdl2::render::RenderTarget>(
     color: Color,
     scale: u32,
 ) -> Result<(), String> {
+    text_with_font(canvas, x, y, value, color, scale, None)
+}
+fn text_with_font<T: sdl2::render::RenderTarget>(
+    canvas: &mut Canvas<T>,
+    x: i32,
+    y: i32,
+    value: &str,
+    color: Color,
+    scale: u32,
+    font: Option<&crate::localization::Font>,
+) -> Result<(), String> {
     canvas.set_draw_color(color);
     for (i, c) in value.chars().enumerate() {
-        for (row, bits) in glyph(c).iter().enumerate() {
+        for (row, bits) in font
+            .and_then(|font| font.ui_glyph(c))
+            .unwrap_or_else(|| glyph(c))
+            .iter()
+            .enumerate()
+        {
             for col in 0..5 {
                 if bits & (1 << (4 - col)) != 0 {
                     canvas.fill_rect(Rect::new(
@@ -728,7 +867,10 @@ mod tests {
         let old = Preferences::parse("Renderer = Original\nTextures = Affine\nFullscreen = true")
             .unwrap();
         assert_eq!(old.render.hud, Default::default());
-        let mut menu = Menu::new(Controls::parse(&Controls::default_file()).unwrap(), old);
+        let mut menu = Menu::new(
+            Controls::parse(&Controls::default_file()).unwrap(),
+            old.clone(),
+        );
         menu.row = 7;
         menu.event(&key(Keycode::Return));
         assert!(menu.hud_page);
@@ -773,23 +915,67 @@ mod tests {
                 },
             },
             fullscreen: true,
+            language: Some("ru-demo.json".into()),
         };
         // A failure staging presentation options must not modify bindings.
-        assert!(save(&cp, &dir.join("missing/enhanced.cfg"), &controls, prefs).is_err());
+        assert!(save(&cp, &dir.join("missing/enhanced.cfg"), &controls, &prefs).is_err());
         assert_eq!(fs::read_to_string(&cp).unwrap(), original);
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
-        save(&cp, &pp, &controls, prefs).unwrap();
+        save(&cp, &pp, &controls, &prefs).unwrap();
         assert_eq!(Preferences::load(&pp).unwrap(), prefs);
         assert_eq!(Controls::load(&cp).unwrap().encode(), controls.encode());
         assert_eq!(
             fs::read_to_string(cp.with_extension("cfg.options-backup")).unwrap(),
             original
         );
-        save(&cp, &pp, &controls, Preferences::default()).unwrap(); // replacing existing files on Windows
+        save(&cp, &pp, &controls, &Preferences::default()).unwrap(); // replacing existing files on Windows
         assert_eq!(Preferences::load(&pp).unwrap(), Preferences::default());
         assert!(Preferences::parse("Renderer = Broken").is_err());
         assert!(Preferences::parse("Fullscreen = true\nFullscreen = false").is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn language_selection_is_a_draft_and_old_preferences_still_load() {
+        assert_eq!(
+            Preferences::parse("Fullscreen = false").unwrap().language,
+            None
+        );
+        for bad in [
+            "../ru.json",
+            "C:\\ru.json",
+            "ru.json#x",
+            "ru.json/other.json",
+        ] {
+            assert!(!crate::localization::valid_file_name(bad));
+        }
+        assert!(Preferences::parse("Language = ../ru.json").is_err());
+        let mut menu = Menu::new(
+            Controls::parse(crate::controls::DEFAULT).unwrap(),
+            Preferences::default(),
+        )
+        .with_languages(vec![crate::localization::Choice {
+            file: "ru-demo.json".into(),
+            label: "Русский (ru)".into(),
+            font: crate::localization::test_font(),
+        }]);
+        menu.row = 8;
+        menu.event(&key(Keycode::Return));
+        assert!(menu.language_page);
+        menu.event(&key(Keycode::Down));
+        menu.event(&key(Keycode::Return));
+        assert_eq!(menu.prefs.language.as_deref(), Some("ru-demo.json"));
+        assert!(menu.message.contains("restart"));
+        menu.event(&key(Keycode::Escape));
+        assert_eq!(menu.row, 8);
+        menu.event(&key(Keycode::Down));
+        assert!(matches!(menu.event(&key(Keycode::Return)), Command::Save));
+        menu.row = 11;
+        assert_eq!(menu.first_row(), 1);
+        assert!(menu.languages[0].font.ui_glyph('Р').is_some());
+        assert_eq!(
+            menu.languages[0].font.ui_glyph('р'),
+            menu.languages[0].font.ui_glyph('Р')
+        );
     }
     #[test]
     fn classic_cannot_be_unbound_and_reserved_keys_stay_reserved() {

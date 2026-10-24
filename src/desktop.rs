@@ -81,6 +81,8 @@ pub struct Desktop {
     menu: Option<crate::options::Menu>,
     release_input: bool,
     preferences_path: std::path::PathBuf,
+    language: Option<String>,
+    languages: Vec<crate::localization::Choice>,
     next_frame: Instant,
     controls: crate::controls::Controls,
     input_latch: crate::controls::InputLatch,
@@ -221,6 +223,8 @@ impl Desktop {
             notice: "",
             preview_status: "",
             render_settings: preferences.render,
+            language: preferences.language,
+            languages: Vec::new(),
             renderer_available: false,
             gamepad,
             controls,
@@ -251,6 +255,16 @@ impl Desktop {
 
     pub fn paused(&self) -> bool {
         self.paused || !self.focused || self.menu.is_some()
+    }
+    pub fn set_languages(&mut self, languages: Vec<crate::localization::Choice>) {
+        if self
+            .language
+            .as_ref()
+            .is_some_and(|file| !languages.iter().any(|choice| &choice.file == file))
+        {
+            self.language = None;
+        }
+        self.languages = languages;
     }
     pub fn update_status(
         &mut self,
@@ -350,14 +364,18 @@ impl Desktop {
                     ..
                 }
             ) {
-                self.menu = Some(crate::options::Menu::new(
-                    self.controls.clone(),
-                    crate::options::Preferences {
-                        render: *settings,
-                        fullscreen: self.canvas.window().fullscreen_state()
-                            != sdl2::video::FullscreenType::Off,
-                    },
-                ));
+                self.menu = Some(
+                    crate::options::Menu::new(
+                        self.controls.clone(),
+                        crate::options::Preferences {
+                            render: *settings,
+                            fullscreen: self.canvas.window().fullscreen_state()
+                                != sdl2::video::FullscreenType::Off,
+                            language: self.language.clone(),
+                        },
+                    )
+                    .with_languages(self.languages.clone()),
+                );
                 self.title_initialized = false;
                 continue;
             }
@@ -557,7 +575,7 @@ impl Desktop {
             &self.controls_path,
             &self.preferences_path,
             &menu.controls,
-            menu.prefs,
+            &menu.prefs,
         ) {
             let _ = self.canvas.window_mut().set_fullscreen(old);
             return Err(e);
@@ -574,6 +592,7 @@ impl Desktop {
             }
         }
         self.controls = menu.controls.clone();
+        self.language = menu.prefs.language.clone();
         *settings = menu.prefs.render;
         self.render_settings = *settings;
         self.title_initialized = false;
@@ -690,6 +709,102 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires isolated SDL event queue"]
+    fn language_options_real_sdl() {
+        use super::*;
+        use crate::control_context::Context;
+        let directory = std::env::var_os("GTA_LANGUAGE_OPTIONS_TEST_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("language-options-{}", std::process::id()))
+            });
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("controls.cfg");
+        let original = crate::controls::Controls::default_file();
+        std::fs::write(&path, &original).unwrap();
+        let choices = vec![crate::localization::Choice {
+            file: "ru-demo.json".into(),
+            label: "Русский — проверка (ru)".into(),
+            font: crate::localization::test_font(),
+        }];
+        let mut ui = Desktop::new(path.clone()).unwrap();
+        ui.set_languages(choices.clone());
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let events = ui._sdl.event().unwrap();
+        let mut settings = crate::render_settings::Settings::default();
+        let send = |ui: &mut Desktop, settings: &mut crate::render_settings::Settings, key| {
+            events
+                .push_event(Event::KeyDown {
+                    timestamp: 0,
+                    window_id: ui.canvas.window().id(),
+                    keycode: Some(key),
+                    scancode: sdl2::keyboard::Scancode::from_keycode(key),
+                    keymod: sdl2::keyboard::Mod::NOMOD,
+                    repeat: false,
+                })
+                .unwrap();
+            ui.poll(settings, true, Context::OnFoot).unwrap();
+        };
+        for save in [false, true] {
+            send(&mut ui, &mut settings, Keycode::Escape);
+            for _ in 0..8 {
+                send(&mut ui, &mut settings, Keycode::Down);
+            }
+            send(&mut ui, &mut settings, Keycode::Return);
+            send(&mut ui, &mut settings, Keycode::Down);
+            send(&mut ui, &mut settings, Keycode::Return);
+            assert_eq!(ui.language, None);
+            assert!(!directory.join("enhanced.cfg").exists());
+            assert_eq!(
+                ui.menu.as_ref().unwrap().prefs.language.as_deref(),
+                Some("ru-demo.json")
+            );
+            ui.present_paused(&mut textures).unwrap();
+            let (width, height) = ui.canvas.output_size().unwrap();
+            let mut pixels = format!("P6\n{width} {height}\n255\n").into_bytes();
+            pixels.extend(ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap());
+            std::fs::write(directory.join("language-menu.ppm"), pixels).unwrap();
+            send(&mut ui, &mut settings, Keycode::Escape);
+            if save {
+                send(&mut ui, &mut settings, Keycode::Down);
+                send(&mut ui, &mut settings, Keycode::Return);
+            } else {
+                send(&mut ui, &mut settings, Keycode::Escape);
+            }
+            assert!(ui.menu.is_none());
+            ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+            assert_eq!(ui.language.as_deref(), save.then_some("ru-demo.json"));
+            assert_eq!(
+                crate::controls::Controls::load(&path).unwrap().encode(),
+                crate::controls::Controls::parse(&original)
+                    .unwrap()
+                    .encode()
+            );
+            if !save {
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+            }
+        }
+        let preferences =
+            crate::options::Preferences::load(&directory.join("enhanced.cfg")).unwrap();
+        assert_eq!(preferences.language.as_deref(), Some("ru-demo.json"));
+        std::fs::copy(
+            directory.join("enhanced.cfg"),
+            directory.join("selected.cfg"),
+        )
+        .unwrap();
+        drop(textures);
+        drop(creator);
+        drop(events);
+        drop(ui);
+        let mut ui = Desktop::new(path).unwrap();
+        ui.set_languages(choices);
+        assert_eq!(ui.language.as_deref(), Some("ru-demo.json"));
+        ui.set_languages(Vec::new());
+        assert_eq!(ui.language, None);
+    }
+
     use super::*;
     #[test]
     fn pixel_crosshair_has_transparent_hotspot_white_arms_and_black_outline() {
@@ -793,6 +908,7 @@ mod tests {
         capture(&ui, "hud-menu.ppm");
         assert_eq!(settings.hud, crate::hud_layout::Settings::default()); // still a draft
         send(&mut ui, &mut settings, Keycode::Escape); // root HUD row 7
+        send(&mut ui, &mut settings, Keycode::Down); // language
         send(&mut ui, &mut settings, Keycode::Down); // save
                                                      // A failed save leaves the menu open and active settings untouched.
         ui.preferences_path = directory.join("missing/enhanced.cfg");
@@ -848,7 +964,7 @@ mod tests {
             send(&mut ui, &mut settings, Keycode::Escape);
             ui.present_paused(&mut textures).unwrap();
             if save {
-                for _ in 0..8 {
+                for _ in 0..9 {
                     send(&mut ui, &mut settings, Keycode::Down);
                 }
                 send(&mut ui, &mut settings, Keycode::Return);
@@ -949,7 +1065,7 @@ mod tests {
             }
             send(&mut ui, &mut settings, Keycode::Escape);
             if save {
-                for _ in 0..6 {
+                for _ in 0..7 {
                     send(&mut ui, &mut settings, Keycode::Down);
                 }
                 send(&mut ui, &mut settings, Keycode::Return);

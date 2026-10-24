@@ -28,6 +28,8 @@ mod frame_capture;
 mod gamepad;
 mod ground_projection;
 mod hud_layout;
+mod language_font;
+mod localization;
 mod mouse_aim;
 mod native_audit;
 mod native_host;
@@ -187,6 +189,26 @@ fn coverage(native_dispatches: u64, misses: u64, rejected: u64) -> coverage::Cov
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let language_path = if let Some(index) = args.iter().position(|s| s == "--language-pack") {
+        if index + 1 >= args.len() {
+            return Err("--language-pack requires FILE.json".into());
+        }
+        let path = std::path::PathBuf::from(args.remove(index + 1));
+        args.remove(index);
+        Some(path)
+    } else {
+        None
+    };
+    let text_trace = if let Some(index) = args.iter().position(|s| s == "--text-trace") {
+        if index + 1 >= args.len() {
+            return Err("--text-trace requires NEW_FILE.csv".into());
+        }
+        let path = std::path::PathBuf::from(args.remove(index + 1));
+        args.remove(index);
+        Some(path)
+    } else {
+        None
+    };
     let aim_path = if let Some(i) = args.iter().position(|s| s == "--aim-input") {
         if i + 1 >= args.len() {
             return Err("--aim-input requires FILE.gba-aim".into());
@@ -493,6 +515,82 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if rom.len() != 16 * 1024 * 1024 || &rom[0xac..0xb0] != b"BGTE" {
         return Err("Expected GTA Advance USA ROM".into());
     }
+    let language_path = language_path.or_else(|| {
+        if args[1] == "-" {
+            return None;
+        }
+        let path = std::path::Path::new(&args[1]).with_file_name("language-pack.json");
+        path.exists().then_some(path)
+    });
+    if language_path.is_none() && args[1] != "-" {
+        let info = std::path::Path::new(&args[1]).with_file_name("info.txt");
+        if fs::read_to_string(info).is_ok_and(|text| {
+            text.lines()
+                .any(|line| line == "language_pack=language-pack.json")
+        }) {
+            return Err(
+                "Recorded language-pack.json is missing; restore the session's package".into(),
+            );
+        }
+    }
+    #[cfg(feature = "desktop")]
+    let language_executable = std::env::current_exe()?;
+    #[cfg(feature = "desktop")]
+    let language_directory = localization::directory(&language_executable);
+    #[cfg(feature = "desktop")]
+    let language_choices = if mode == "play" {
+        if args[1] == "-" {
+            match localization::ensure_english(&language_directory, &rom) {
+                Ok(Some(path)) => {
+                    eprintln!("Editable English language pack created: {}", path.display())
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("English language export: {error}"),
+            }
+        }
+        localization::discover(&language_directory, &rom)
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "desktop")]
+    let language_path = language_path.or_else(|| {
+        // Interactive launches use user preferences. Replays use only their
+        // own snapshots or an explicit override, regardless of local settings.
+        if mode != "play" || args[1] != "-" {
+            return None;
+        }
+        let preferences_path = controls_path
+            .clone()
+            .unwrap_or_else(|| language_executable.with_file_name("controls.cfg"))
+            .with_file_name("enhanced.cfg");
+        let selected = options::Preferences::load(&preferences_path)
+            .ok()?
+            .language?;
+        if language_choices
+            .iter()
+            .any(|choice| choice.file == selected)
+        {
+            Some(language_directory.join(selected))
+        } else {
+            eprintln!("Saved language pack unavailable: {selected}; using original game language");
+            None
+        }
+    });
+    let mut language = language_path
+        .as_ref()
+        .map(|path| localization::Language::load(path, &rom))
+        .transpose()?;
+    if language.is_some() && (mode == "interp" || force_interpreter || check_options.is_some()) {
+        return Err(
+            "Language packs require native mode without differential block checking".into(),
+        );
+    }
+    if let Some(path) = text_trace.as_ref() {
+        if mode == "interp" || force_interpreter {
+            return Err("Text trace requires native mode".into());
+        }
+        localization::open_trace(path, &rom)?;
+    }
     // Libraries must outlive every copied function pointer.
     let mut libraries = Vec::new();
     let mut table: HashMap<u32, Vec<BlockFn>> = HashMap::new();
@@ -508,8 +606,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let rescue = lib
                     .get::<*const u32>(b"advance_native_rescue_v1")
                     .is_ok_and(|version| **version == 1);
-                if (scene_options.is_some() || preview_enabled) && !rescue {
-                    return Err("Scene replay requires one-instruction AOT libraries".into());
+                if (scene_options.is_some() || preview_enabled || language.is_some()) && !rescue {
+                    return Err(
+                        "Scene replay/language packs require one-instruction AOT libraries".into(),
+                    );
                 }
                 let ptr: libloading::Symbol<*const RcgBlock> = lib.get(b"rcg_blocks")?;
                 let count: libloading::Symbol<*const u64> = lib.get(b"rcg_block_count")?;
@@ -530,6 +630,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut m = Machine::new(rom);
+    if let Some(language) = language.as_mut() {
+        language.install(&mut m);
+        println!(
+            "Language pack: {} | translated={} | CustomFont={}",
+            language.label, language.translated, language.extended
+        );
+    }
     let mut camera_preview = if preview_enabled {
         Some(camera_preview::Preview::new(preview_output)?)
     } else {
@@ -557,6 +664,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut recording = session_path
         .map(|path| session::Session::open(path, &m, &args[0], &args[5..]))
         .transpose()?;
+    if let (Some(recording), Some(language)) = (recording.as_ref(), language.as_ref()) {
+        recording.language_pack(&language.bytes)?;
+    }
     #[cfg(feature = "desktop")]
     let mut desktop = if mode == "play" {
         Some(desktop::Desktop::new(controls_path.unwrap_or(
@@ -565,6 +675,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    #[cfg(feature = "desktop")]
+    if let Some(ui) = desktop.as_mut() {
+        ui.set_languages(language_choices);
+    }
     #[cfg(feature = "desktop")]
     let texture_creator = desktop.as_ref().map(|ui| ui.texture_creator());
     #[cfg(feature = "desktop")]
@@ -593,6 +707,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ..RT_API
     };
     let camera_enabled = camera_options.is_some();
+    if text_trace.is_some() {
+        api.read32 = localization::read32;
+    }
     if let Some((path, start, end)) = camera_options {
         camera_trace::open(&path, start, end)?;
         api.write8 = camera_trace::write8;
@@ -694,6 +811,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 let key = m.cpu.regs[15] | m.cpu.thumb() as u32;
+                if let Some(language) = language.as_mut() {
+                    if key == 0x0802de67
+                        || text_trace.is_some()
+                            && matches!(key, 0x0802e4f9 | 0x0802e191 | 0x0802e383)
+                    {
+                        language.observe(&mut m, key);
+                    }
+                }
                 if let Some(preview) = camera_preview.as_mut() {
                     if preview.interested(key) {
                         preview.observe(&m, key);
@@ -892,6 +1017,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if args[3] != "-" {
         fs::write(&args[3], output)?;
     }
+    if let Some(language) = language.as_ref() {
+        println!(
+            "language_pack_translated={} extended_glyph_calls={}",
+            language.translated, language.glyph_calls
+        );
+    }
+    localization::close_trace()?;
     println!("mode={mode} frames={} hash={:016x} seconds={:.3} dispatch_miss_steps={misses} rejected_fallback_steps={rejected_fallback} selected={selected:?}",m.bus.frames,hash(&m.bus.framebuffer),start.elapsed().as_secs_f64());
     if mode == "interp" || force_interpreter {
         return Ok(());

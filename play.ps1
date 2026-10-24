@@ -2,6 +2,7 @@ param(
     [string]$Rom,
     [string]$SavePath,
     [string]$ControlsPath,
+    [string]$LanguagePack,
     [switch]$SkipBuild,
     [switch]$NoRecord,
     [string]$SessionDirectory,
@@ -22,6 +23,7 @@ foreach ($path in @($SavePath, $ControlsPath)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
 }
 $runtimeOptions = @('--camera-preview')
+if ($LanguagePack) { $runtimeOptions += @('--language-pack', (Resolve-Path -LiteralPath $LanguagePack).Path) }
 if ($OriginalRenderer) { $runtimeOptions += '--original-renderer' }
 if ($AffineTextures) { $runtimeOptions += '--affine-textures' }
 if (!$NoRecord) {

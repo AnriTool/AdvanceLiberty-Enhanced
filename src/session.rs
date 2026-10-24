@@ -57,6 +57,16 @@ impl Session {
         &self.directory
     }
 
+    pub fn language_pack(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut file = File::create_new(self.directory.join("language-pack.json"))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        let mut metadata = fs::OpenOptions::new()
+            .append(true)
+            .open(self.directory.join("info.txt"))?;
+        writeln!(metadata, "language_pack=language-pack.json")
+    }
+
     pub fn input(&mut self, frame: u64, keys: u16) -> io::Result<()> {
         if self.previous_keys != Some(keys) {
             writeln!(self.input, "{frame} {keys:03x}")?;
@@ -139,6 +149,14 @@ mod tests {
         session.input(0, 0x3ff).unwrap();
         session.input(1, 0x3ff).unwrap();
         session.input(2, 0x3fe).unwrap();
+        session
+            .language_pack("{\"name\":\"Русский\"}".as_bytes())
+            .unwrap();
+        assert!(session.language_pack(b"{}").is_err());
+        assert_eq!(
+            fs::read_to_string(directory.join("language-pack.json")).unwrap(),
+            "{\"name\":\"Русский\"}"
+        );
         session.aim(0, None).unwrap();
         assert!(!directory.join("aim.gba-aim").exists());
         session.aim(1, Some(256)).unwrap();
