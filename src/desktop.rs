@@ -64,6 +64,9 @@ impl<'a> Textures<'a> {
 }
 
 pub struct Desktop {
+    aim_pointer: Option<sdl2::mouse::Cursor>,
+    arrow_pointer: Option<sdl2::mouse::Cursor>,
+    pointer_is_aim: bool,
     canvas: Canvas<Window>,
     events: sdl2::EventPump,
     audio: Option<AudioQueue<i16>>,
@@ -105,7 +108,38 @@ fn rgb(pixel: u16) -> [u8; 3] {
     ]
 }
 
+fn crosshair_bits() -> ([u8; 128], [u8; 128]) {
+    let (mut data, mut mask) = ([0u8; 128], [0u8; 128]);
+    for y in 0i32..32 {
+        for x in 0i32..32 {
+            let (dx, dy) = ((x - 15).abs(), (y - 15).abs());
+            let outline = dx <= 2 && (4..=12).contains(&dy) || dy <= 2 && (4..=12).contains(&dx);
+            let white = dx == 0 && (5..=11).contains(&dy) || dy == 0 && (5..=11).contains(&dx);
+            let i = (y * 4 + x / 8) as usize;
+            let bit = 0x80 >> (x % 8);
+            if outline {
+                mask[i] |= bit;
+                if !white {
+                    data[i] |= bit;
+                }
+            }
+        }
+    }
+    (data, mask)
+}
 impl Desktop {
+    fn update_aim_pointer(&mut self, active: bool) {
+        if active != self.pointer_is_aim {
+            if let Some(cursor) = if active {
+                &self.aim_pointer
+            } else {
+                &self.arrow_pointer
+            } {
+                cursor.set();
+            }
+            self.pointer_is_aim = active;
+        }
+    }
     pub fn new(controls_path: std::path::PathBuf) -> Result<Self, String> {
         let preferences_path = controls_path.with_file_name("enhanced.cfg");
         let preferences =
@@ -153,6 +187,10 @@ impl Desktop {
                 .set_fullscreen(sdl2::video::FullscreenType::Desktop)?;
         }
         let events = sdl.event_pump()?;
+        let (data, mask) = crosshair_bits();
+        let aim_pointer = sdl2::mouse::Cursor::new(&data, &mask, 32, 32, 15, 15).ok();
+        let arrow_pointer = sdl2::mouse::Cursor::from_system(sdl2::mouse::SystemCursor::Arrow).ok();
+
         let audio = (|| {
             let subsystem = sdl.audio()?;
             subsystem.open_queue::<i16, _>(
@@ -175,6 +213,9 @@ impl Desktop {
             }
         };
         Ok(Self {
+            aim_pointer,
+            arrow_pointer,
+            pointer_is_aim: false,
             title_updated: Instant::now(),
             title_initialized: false,
             notice: "",
@@ -406,9 +447,33 @@ impl Desktop {
                     .is_some_and(|pad| pad.buttons() != 0x3ff);
             self.input_latch = Default::default();
         }
+        if self.paused() {
+            self.update_aim_pointer(false);
+            self.fps_started = Instant::now();
+            self.fps_frames = 0;
+            self.fps = None;
+            if let Some(audio) = &self.audio {
+                audio.clear();
+            }
+            self.next_frame = Instant::now();
+            std::thread::sleep(Duration::from_millis(10));
+            return Ok(Some(0x3ff));
+        }
+        if releasing_input {
+            self.update_aim_pointer(false);
+            return Ok(Some(0x3ff));
+        }
+        let keyboard_buttons =
+            self.input_latch
+                .sample(&self.controls, context, |binding| match binding {
+                    crate::controls::Binding::Key(key) => keyboard.is_scancode_pressed(key),
+                    crate::controls::Binding::MouseLeft => mouse.left(),
+                    crate::controls::Binding::MouseMiddle => mouse.middle(),
+                    crate::controls::Binding::MouseRight => mouse.right(),
+                });
         if !self.paused()
             && !releasing_input
-            && self.controls.mouse_aim()
+            && self.input_latch.aiming(&self.controls, context)
             && context == crate::control_context::Context::OnFoot
             && self
                 .gamepad
@@ -434,28 +499,14 @@ impl Desktop {
         } else {
             self.last_aim = None;
         }
-        if self.paused() {
-            self.fps_started = Instant::now();
-            self.fps_frames = 0;
-            self.fps = None;
-            if let Some(audio) = &self.audio {
-                audio.clear();
-            }
-            self.next_frame = Instant::now();
-            std::thread::sleep(Duration::from_millis(10));
-            return Ok(Some(0x3ff));
-        }
-        if releasing_input {
-            return Ok(Some(0x3ff));
-        }
+        self.update_aim_pointer(self.aim_cursor.is_some_and(|p| {
+            p[0] >= 0.0
+                && p[1] >= 0.0
+                && p[0] < self.frame_size.0 as f64
+                && p[1] < self.frame_size.1 as f64
+        }));
         Ok(Some(crate::gamepad::merge(
-            self.input_latch
-                .sample(&self.controls, context, |binding| match binding {
-                    crate::controls::Binding::Key(key) => keyboard.is_scancode_pressed(key),
-                    crate::controls::Binding::MouseLeft => mouse.left(),
-                    crate::controls::Binding::MouseMiddle => mouse.middle(),
-                    crate::controls::Binding::MouseRight => mouse.right(),
-                }),
+            keyboard_buttons,
             self.gamepad.as_ref().map_or(0x3ff, |pad| pad.buttons()),
         )))
     }
@@ -465,6 +516,9 @@ impl Desktop {
     }
     pub fn set_aim_projection(&mut self, projection: Option<crate::mouse_aim::Projection>) {
         self.aim_projection = projection;
+    }
+    pub fn mouse_aim_enabled(&self) -> bool {
+        self.controls.mouse_aim() && !self.paused() && !self.release_input
     }
     pub fn aim_angle(&mut self, bus: &gba_core::MemMap) -> Option<u16> {
         if self.paused() || self.release_input || !self.controls.mouse_aim() {
@@ -637,6 +691,18 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pixel_crosshair_has_transparent_hotspot_white_arms_and_black_outline() {
+        let (data, mask) = crosshair_bits();
+        let pixel = |x: usize, y: usize| {
+            let b = 0x80 >> (x % 8);
+            (data[y * 4 + x / 8] & b != 0, mask[y * 4 + x / 8] & b != 0)
+        };
+        assert_eq!(pixel(15, 15), (false, false));
+        assert_eq!(pixel(15, 7), (false, true));
+        assert_eq!(pixel(14, 7), (true, true));
+        assert_eq!(pixel(0, 0), (false, false));
+    }
     use sdl2::keyboard::Scancode;
     #[test]
     #[ignore = "run alone with SDL dummy/software to verify native menu output and persistence"]
@@ -862,6 +928,14 @@ mod tests {
             send(&mut ui, &mut settings, Keycode::Up); // wraps to the new last row
             send(&mut ui, &mut settings, Keycode::Return);
             assert!(ui.menu.as_ref().unwrap().controls.mouse_aim());
+            send(&mut ui, &mut settings, Keycode::Up); // Aim (hold)
+            assert_eq!(
+                ui.menu.as_ref().unwrap().controls.binding_text(1, 11),
+                "MouseRight"
+            );
+            send(&mut ui, &mut settings, Keycode::Return);
+            send(&mut ui, &mut settings, Keycode::G);
+            assert_eq!(ui.menu.as_ref().unwrap().controls.binding_text(1, 11), "G");
             ui.present_paused(&mut textures).unwrap();
             if let Ok(dir) = std::env::var("GTA_OPTIONS_CAPTURE") {
                 let (w, h) = ui.canvas.output_size().unwrap();
@@ -886,6 +960,12 @@ mod tests {
             ui.poll(&mut settings, true, Context::OnFoot).unwrap();
         }
         assert!(crate::controls::Controls::load(&path).unwrap().mouse_aim());
+        assert_eq!(
+            crate::controls::Controls::load(&path)
+                .unwrap()
+                .binding_text(1, 11),
+            "G"
+        );
         // SDL's own coordinate transform accounts for black bars and resizing.
         for (w, h) in [(240, 160), (720, 480), (854, 480)] {
             ui.canvas.set_logical_size(w, h).unwrap();

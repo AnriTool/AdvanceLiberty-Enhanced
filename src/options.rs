@@ -182,6 +182,13 @@ impl Menu {
                 .map_or(11, |s| Controls::actions(s).len() + usize::from(s == 1))
         }
     }
+    fn first_row(&self) -> usize {
+        if self.section.is_some() {
+            self.row.saturating_sub(10)
+        } else {
+            0
+        }
+    }
     fn back(&mut self) -> Command {
         if self.capture.take().is_some() {
             self.message.clear();
@@ -321,8 +328,9 @@ impl Menu {
                 y,
                 ..
             } if (30..690).contains(&x) && y >= 104 => {
-                let row = ((y - 104) / 25) as usize;
-                if row < self.count() {
+                let visible = ((y - 104) / 25) as usize;
+                let row = visible + self.first_row();
+                if visible < 11 && row < self.count() {
                     self.row = row;
                     return self.activate();
                 }
@@ -513,8 +521,8 @@ impl Menu {
                 ("Quit game...".into(), String::new()),
             ]
         };
-        for (i, (label, value)) in rows.iter().enumerate() {
-            let y = 104 + i as i32 * 25;
+        for (i, (label, value)) in rows.iter().enumerate().skip(self.first_row()).take(11) {
+            let y = 104 + (i - self.first_row()) as i32 * 25;
             if i == self.row {
                 canvas.set_draw_color(Color::RGB(53, 93, 114));
                 canvas.fill_rect(Rect::new(30, y, 660, 24))?;
@@ -548,17 +556,9 @@ impl Menu {
         } else {
             "Arrows: select  Enter: change  Esc: discard"
         };
-        let extra_row = self.section == Some(1);
-        text(
-            canvas,
-            38,
-            if extra_row { 407 } else { 392 },
-            hint,
-            Color::RGB(169, 192, 208),
-            2,
-        )?;
+        text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
         let message = if aim_row {
-            "Face cursor; WASD moves freely. Enhanced on foot only"
+            "Hold Aim to face cursor. Default: right mouse button."
         } else if self.graphics_page && self.row == 1 {
             "16:9 expands the world. Menus keep original aspect."
         } else if self.hud_page && self.message.is_empty() {
@@ -573,7 +573,7 @@ impl Menu {
             text(
                 canvas,
                 38,
-                (if extra_row { 434 } else { 420 }) + i as i32 * 17,
+                420 + i as i32 * 17,
                 &line.iter().collect::<String>(),
                 Color::RGB(255, 184, 113),
                 2,
@@ -595,6 +595,7 @@ fn label(action: &str) -> &str {
         "EnterVehicle" => "Enter vehicle",
         "ChangeWeapon" => "Change weapon",
         "AuxiliaryR" => "Auxiliary R",
+        "Aim" => "Aim (hold)",
         _ => action,
     }
 }

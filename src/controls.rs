@@ -12,8 +12,8 @@ const ACTIONS: [&str; 10] = [
     "A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L",
 ];
 
-pub const ENHANCED_DEFAULT: &str = "[OnFoot]\nUp = W, Up\nDown = S, Down\nLeft = A, Left\nRight = D, Right\nFire = J, MouseLeft\nSprint = Left Shift, Right Shift\nJump = Space\nEnterVehicle = F\nChangeWeapon = Tab\nPause = Return\nAuxiliaryR = H\n\n[Vehicle]\nAccelerate = W, Up\nBrakeReverse = S, Down\nSteerLeft = A, Left\nSteerRight = D, Right\nParkingBrake = Space\nHorn = Left Shift, Right Shift\nSpecialMission = CapsLock\nTurretModifier = Left Ctrl, Right Ctrl\nExitVehicle = F\nPause = Return\nChangeWeapon = Tab\n";
-const FOOT: [&str; 11] = [
+pub const ENHANCED_DEFAULT: &str = "[OnFoot]\nUp = W, Up\nDown = S, Down\nLeft = A, Left\nRight = D, Right\nFire = J, MouseLeft\nSprint = Left Shift, Right Shift\nJump = Space\nEnterVehicle = F\nChangeWeapon = Tab\nPause = Return\nAuxiliaryR = H\nAim = MouseRight\n\n[Vehicle]\nAccelerate = W, Up\nBrakeReverse = S, Down\nSteerLeft = A, Left\nSteerRight = D, Right\nParkingBrake = Space\nHorn = Left Shift, Right Shift\nSpecialMission = CapsLock\nTurretModifier = Left Ctrl, Right Ctrl\nExitVehicle = F\nPause = Return\nChangeWeapon = Tab\n";
+const FOOT: [&str; 12] = [
     "Up",
     "Down",
     "Left",
@@ -25,6 +25,7 @@ const FOOT: [&str; 11] = [
     "ChangeWeapon",
     "Pause",
     "AuxiliaryR",
+    "Aim",
 ];
 const VEHICLE: [&str; 11] = [
     "Accelerate",
@@ -59,7 +60,7 @@ pub struct Controls {
     keys: [Vec<Binding>; 10],
     mode: Mode,
     mouse_aim: bool,
-    foot: [Vec<Binding>; 11],
+    foot: [Vec<Binding>; 12],
     vehicle: [Vec<Binding>; 11],
 }
 
@@ -70,6 +71,13 @@ pub struct InputLatch {
     suppressed: HashSet<Binding>,
 }
 impl InputLatch {
+    pub fn aiming(&self, controls: &Controls, context: Context) -> bool {
+        controls.mouse_aim()
+            && context == Context::OnFoot
+            && controls.foot[11]
+                .iter()
+                .any(|key| self.previous_held.contains(key) && !self.suppressed.contains(key))
+    }
     pub fn sample(
         &mut self,
         controls: &Controls,
@@ -199,6 +207,7 @@ impl Controls {
             "Tab",
             "Return",
             "H",
+            "MouseRight",
         ]
         .map(|s| binding(s, 0, true).unwrap());
         let mut vehicle = [
@@ -276,6 +285,13 @@ impl Controls {
         }
         if keys.iter().any(Vec::is_empty) {
             return Err("Controls must define all ten GBA buttons".into());
+        }
+        // Older profiles could already use RMB for another action. Do not
+        // reject or change that binding when adding a new optional action.
+        if !seen.contains(&(1, "aim".to_owned()))
+            && foot[..11].iter().any(|b| b.contains(&Binding::MouseRight))
+        {
+            foot[11].clear();
         }
         validate_profile("GBA", &ACTIONS, &keys)?;
         validate_profile("OnFoot", &FOOT, &foot)?;
@@ -483,6 +499,37 @@ impl Controls {
 mod tests {
     use super::*;
     #[test]
+    fn aim_is_a_remappable_hold_without_gba_buttons_and_requires_release_across_contexts() {
+        let mut c = Controls::parse(&Controls::default_file()).unwrap();
+        c.toggle_mouse_aim();
+        let mut latch = InputLatch::default();
+        assert_eq!(latch.sample(&c, Context::OnFoot, |_| false), 0x3ff);
+        assert!(!latch.aiming(&c, Context::OnFoot));
+        assert_eq!(
+            latch.sample(&c, Context::OnFoot, |b| b == Binding::MouseRight),
+            0x3ff
+        );
+        assert!(latch.aiming(&c, Context::OnFoot));
+        assert_eq!(
+            latch.sample(&c, Context::OnFoot, |b| matches!(
+                b,
+                Binding::MouseRight | Binding::MouseLeft
+            )),
+            0x3fe
+        );
+        latch.sample(&c, Context::Menu, |b| b == Binding::MouseRight);
+        latch.sample(&c, Context::OnFoot, |b| b == Binding::MouseRight);
+        assert!(!latch.aiming(&c, Context::OnFoot));
+        latch.sample(&c, Context::OnFoot, |_| false);
+        c.rebind(1, 11, Some(Binding::Key(Scancode::G)), false)
+            .unwrap();
+        latch.sample(&c, Context::OnFoot, |b| b == Binding::Key(Scancode::G));
+        assert!(latch.aiming(&c, Context::OnFoot));
+        assert!(!latch.aiming(&c, Context::Vehicle));
+        c.toggle_mode().unwrap();
+        assert!(!latch.aiming(&c, Context::OnFoot));
+    }
+    #[test]
     fn aim_setting_roundtrips_without_changing_buttons_and_classic_disables_it() {
         let mut controls = Controls::parse(&Controls::default_file()).unwrap();
         assert!(!controls.mouse_aim());
@@ -518,6 +565,7 @@ mod tests {
         }
         let remapped = Controls::parse(
             &Controls::default_file()
+                .replace("Aim = MouseRight\n", "")
                 .replace("Fire = J, MouseLeft", "Fire = K, MouseRight")
                 .replace("Sprint = Left Shift, Right Shift", "Sprint = C"),
         )
@@ -661,6 +709,7 @@ mod tests {
     #[test]
     fn mouse_fire_and_independent_remaps_support_unbinding_and_chords() {
         let text = Controls::default_file()
+            .replace("Aim = MouseRight\n", "")
             .replace("Fire = J, MouseLeft", "Fire = K, MouseRight")
             .replace("Jump = Space", "Jump = C")
             .replace("Accelerate = W, Up", "Accelerate = I")

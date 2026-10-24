@@ -85,7 +85,9 @@ struct Aim {
     angle: u32,
 }
 thread_local! { static ACTIVE: Cell<Option<Aim>> = const {Cell::new(None)}; }
+thread_local! { static PRESENTED: Cell<Option<(u32,u16)>> = const {Cell::new(None)}; }
 pub fn set(bus: &MemMap, angle: Option<u16>) {
+    PRESENTED.with(|p| p.set(None));
     let aim = angle.filter(|&a| a < 1024).and_then(|angle| {
         let (actor, position, _) = player(bus)?;
         Some(Aim {
@@ -95,6 +97,25 @@ pub fn set(bus: &MemMap, angle: Option<u16>) {
         })
     });
     ACTIVE.with(|a| a.set(aim));
+}
+pub fn heading(bus: &MemMap) -> Option<(u32, u16)> {
+    PRESENTED
+        .with(Cell::get)
+        .filter(|&(actor, _)| word(bus, 0x02000f10) == Some(actor))
+}
+pub fn present(bus: &MemMap, enabled: bool) {
+    let target = enabled
+        .then(|| {
+            let (actor, position, _) = player(bus)?;
+            let angle = ACTIVE
+                .with(Cell::get)
+                .filter(|a| a.actor == actor)
+                .map(|a| a.angle)
+                .or_else(|| word(bus, position + 12))?;
+            Some((actor, ((angle >> 16) & 1023) as u16))
+        })
+        .flatten();
+    PRESENTED.with(|p| p.set(target));
 }
 fn override_angle(bus: &MemMap, pc: u32, address: u32) -> Option<u32> {
     // Verify the exact load instruction as well as its PC. Other reads,

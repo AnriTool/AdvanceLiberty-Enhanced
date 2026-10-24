@@ -838,6 +838,9 @@ impl Preview {
             if let Some(latest) = &self.current {
                 objects.use_hud_from(&latest.objects);
             }
+            if let Some((actor, angle)) = crate::mouse_aim::heading(bus) {
+                objects.late_aim(actor, angle);
+            }
             if let Some((actor, _, _)) = crate::mouse_aim::player(bus) {
                 aim_projection = objects.aim_projection(actor, shift, viewport);
             }

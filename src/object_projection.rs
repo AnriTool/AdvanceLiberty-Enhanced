@@ -190,6 +190,7 @@ struct MotionAnchor {
 }
 #[derive(Clone, Copy)]
 struct Anchor {
+    facing: Option<f64>,
     correction: [f64; 2],
     slope: [f64; 2],
     world_screen: [f64; 2],
@@ -266,6 +267,7 @@ impl Observer {
                 sprite.y = p.integer[1];
                 sprite.owner = p.owner;
                 sprite.correction = p.anchor.correction;
+                sprite.facing = p.anchor.facing;
                 sprite.slope = p.anchor.slope;
                 sprite.world_screen = Some(p.anchor.world_screen);
             } else if let Some((owner, p)) = self.cached.get(&sprite.node) {
@@ -340,6 +342,7 @@ impl Observer {
                 return Err(format!("World OBJ projection mismatch for {owner:08x}"));
             }
             let anchor = Anchor {
+                facing: Some(m.cpu.regs[10] as f64 / 65536.0),
                 correction: projected.map(|(integer, precise)| precise - integer as f64),
                 slope: scale.map(|s| s as f64 / 65536.0),
                 world_screen: std::array::from_fn(|i| {
@@ -434,6 +437,7 @@ impl Observer {
         let owner = m.cpu.regs[if screen { 5 } else { 6 }];
         let anchor = if screen {
             Anchor {
+                facing: None,
                 correction: [0.; 2],
                 slope: [0x60, 0x64].map(|o| {
                     i32::from_le_bytes(m.bus.iwram[o..o + 4].try_into().unwrap()) as f64 / 65536.
@@ -498,6 +502,7 @@ impl Observer {
         sprite.x = xy[0];
         sprite.y = xy[1];
         sprite.correction = anchor.correction;
+        sprite.facing = anchor.facing;
         sprite.slope = anchor.slope;
         sprite.world_screen = Some(anchor.world_screen);
         sprite.hires = true;
@@ -560,6 +565,7 @@ impl Observer {
                     return Err("Checked OBJ placement differs from OAM".into());
                 }
                 sprite.correction = p.anchor.correction;
+                sprite.facing = p.anchor.facing;
                 sprite.slope = p.anchor.slope;
             } else if let Some((_, position)) = self.cached.get(&node) {
                 if position[0] & 511 != half(&source.oam, slot * 8 + 2) as i32 & 511
@@ -706,8 +712,28 @@ impl Texture {
         }
     }
 }
+/// Presentation-only rigid turn about an actor's feet, in projected world axes.
+#[derive(Clone, Copy)]
+struct Turn {
+    pivot: [f64; 2],
+    slope: [f64; 2],
+    sin: f64,
+    cos: f64,
+}
+impl Turn {
+    fn map(self, p: [f64; 2], inverse: bool) -> [f64; 2] {
+        let [x, y] = std::array::from_fn(|i| (p[i] - self.pivot[i]) / self.slope[i]);
+        let sin = if inverse { -self.sin } else { self.sin };
+        [
+            self.pivot[0] + (self.cos * x - sin * y) * self.slope[0],
+            self.pivot[1] + (sin * x + self.cos * y) * self.slope[1],
+        ]
+    }
+}
 #[derive(Clone)]
 struct Sprite {
+    facing: Option<f64>,
+    turn: Option<Turn>,
     pixels: Arc<Vec<Option<u16>>>,
     host_only: bool,
     node: u32,
@@ -827,6 +853,8 @@ impl Sprite {
             y -= 256;
         }
         Ok(Some(Self {
+            facing: None,
+            turn: None,
             pixels: Arc::new(pixels),
             host_only: false,
             node: 0,
@@ -1346,6 +1374,30 @@ impl Snapshot {
             size: [view.width as u32, view.height as u32],
         })
     }
+    pub fn late_aim(&mut self, actor: u32, angle: u16) {
+        for s in &mut self.sprites {
+            let Some(root) = s.motion.filter(|m| m.identity[0] == actor && !m.vehicle) else {
+                continue;
+            };
+            let Some(facing) = s.facing else {
+                continue;
+            };
+            if s.slope.iter().any(|v| *v <= 0.0) {
+                continue;
+            }
+            let radians = (angle as f64 - facing) * std::f64::consts::TAU / 1024.0;
+            let (sin, cos) = radians.sin_cos();
+            if sin.abs() < 1e-9 && (cos - 1.0).abs() < 1e-9 {
+                continue;
+            }
+            s.turn = Some(Turn {
+                pivot: root.screen,
+                slope: s.slope,
+                sin,
+                cos,
+            });
+        }
+    }
     fn pixel(&self, x: f64, y: f64, delta: i32, continuous: bool) -> Option<(u16, u16, usize)> {
         self.sprites
             .iter()
@@ -1493,10 +1545,43 @@ impl Snapshot {
                         .ceil()
                         .clamp(0.0, width as f64) as usize
                 };
-                let x_start = x_bound(left);
-                let x_end = x_bound(left + s.width as f64 * sprite_zoom);
-                let y_start = bound(top, height);
-                let y_end = bound(top + s.height as f64 * sprite_zoom, height);
+                let turn = s.turn.map(|mut t| {
+                    t.pivot = std::array::from_fn(|i| {
+                        t.pivot[i] - s.slope[i] * delta[i] as f64 / 65536.0
+                    });
+                    t
+                });
+                let mut bounds = [
+                    left,
+                    top,
+                    left + s.width as f64 * sprite_zoom,
+                    top + s.height as f64 * sprite_zoom,
+                ];
+                if let Some(t) = turn {
+                    let corners = [
+                        [bounds[0], bounds[1]],
+                        [bounds[2], bounds[1]],
+                        [bounds[0], bounds[3]],
+                        [bounds[2], bounds[3]],
+                    ]
+                    .map(|p| t.map(p, false));
+                    bounds = [
+                        corners.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
+                        corners.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+                        corners
+                            .iter()
+                            .map(|p| p[0])
+                            .fold(f64::NEG_INFINITY, f64::max),
+                        corners
+                            .iter()
+                            .map(|p| p[1])
+                            .fold(f64::NEG_INFINITY, f64::max),
+                    ];
+                }
+                let x_start = x_bound(bounds[0]);
+                let x_end = x_bound(bounds[2]);
+                let y_start = bound(bounds[1], height);
+                let y_end = bound(bounds[3], height);
                 if x_start == x_end || y_start == y_end {
                     continue;
                 }
@@ -1507,7 +1592,19 @@ impl Snapshot {
                     let local_y = (y as f64 / scale as f64 - top) / sprite_zoom;
                     for (offset, &local_x) in local_x.iter().enumerate() {
                         let x = x_start + offset;
-                        if let Some(color) = s.sample_local([local_x, local_y], true) {
+                        let local = if let Some(t) = turn {
+                            let p = t.map(
+                                [
+                                    (x as f64 - x_offset) / scale as f64,
+                                    y as f64 / scale as f64,
+                                ],
+                                true,
+                            );
+                            [(p[0] - left) / sprite_zoom, (p[1] - top) / sprite_zoom]
+                        } else {
+                            [local_x, local_y]
+                        };
+                        if let Some(color) = s.sample_local(local, true) {
                             objects[y * width + x] = Some((
                                 Pixel {
                                     color,
@@ -1768,6 +1865,7 @@ mod tests {
                 owner: 0x02002550,
                 integer: [248, 60],
                 anchor: Anchor {
+                    facing: None,
                     correction: [0.25; 2],
                     slope: [1.; 2],
                     world_screen: [252., 64.],
@@ -1837,6 +1935,35 @@ mod tests {
                 crate::viewport::View::new(3, crate::viewport::Aspect::Wide)
             )
             .is_none());
+    }
+    #[test]
+    fn late_aim_turns_current_body_and_feet_without_advancing_camera_or_other_sprites() {
+        let bus = MemMap::new(Vec::new());
+        let mut s = Sprite::read(&bus, 0).unwrap().unwrap();
+        s.slope = [2.0, 1.0];
+        s.facing = Some(0.0);
+        s.motion = Some(MotionAnchor {
+            identity: [1, 2],
+            world: [0.0; 2],
+            screen: [100.0, 80.0],
+            vehicle: false,
+        });
+        let mut npc = s.clone();
+        npc.motion.as_mut().unwrap().identity[0] = 3;
+        let mut hud = s.clone();
+        hud.motion = None;
+        hud.slope = [0.0; 2];
+        let mut scene = Snapshot::new(vec![s.clone(), s, npc, hud], &bus);
+        scene.late_aim(1, 256);
+        for part in &scene.sprites[..2] {
+            let turn = part.turn.unwrap();
+            let rotated = turn.map([100.0, 70.0], false);
+            assert!((rotated[0] - 120.0).abs() < 1e-9 && (rotated[1] - 80.0).abs() < 1e-9);
+            let original = turn.map(rotated, true);
+            assert!((original[0] - 100.0).abs() < 1e-9 && (original[1] - 70.0).abs() < 1e-9);
+            assert_eq!(part.motion.unwrap().screen, [100.0, 80.0]);
+        }
+        assert!(scene.sprites[2..].iter().all(|s| s.turn.is_none()));
     }
     #[test]
     fn side_sprite_and_oam_sprite_interpolate_only_with_same_checked_actor_root() {
@@ -2591,6 +2718,7 @@ mod tests {
                 owner: 0x02025284,
                 integer: [12, 34],
                 anchor: Anchor {
+                    facing: None,
                     correction: [0.25; 2],
                     slope: [1.0; 2],
                     world_screen: [0.0; 2],

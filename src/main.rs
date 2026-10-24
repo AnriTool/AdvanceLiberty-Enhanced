@@ -623,6 +623,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let i = points.partition_point(|&(f, _)| f <= before);
             i.checked_sub(1).and_then(|i| points[i].1)
         });
+        let mut aim_presentation = aim_keys.is_some();
         if let Some(trace) = control_trace.as_mut() {
             use std::io::Write;
             writeln!(
@@ -652,11 +653,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if args[1] == "-" && !force_interpreter {
                 aim_angle = ui.aim_angle(&m.bus);
+                aim_presentation = ui.mouse_aim_enabled();
             }
         }
         // Resolve and validate the current actor on every host frame. Hooks
         // cannot affect vehicle physics or any other object's direction.
         mouse_aim::set(&m.bus, aim_angle);
+        mouse_aim::present(&m.bus, aim_presentation);
         if let Some(recording) = recording.as_mut() {
             recording.input(before, m.bus.keys)?;
             recording.aim(before, aim_angle)?;

@@ -14,7 +14,7 @@ Right, Left, Up, Down, R, L. Эта секция используется в Cla
 включения Enhanced — `data/config/controls-gba-backup.cfg`.
 
 В `[OnFoot]` доступны Up, Down, Left, Right, Fire, Sprint, Jump,
-EnterVehicle, ChangeWeapon, Pause и AuxiliaryR. В `[Vehicle]` — Accelerate, BrakeReverse,
+EnterVehicle, ChangeWeapon, Pause, AuxiliaryR и Aim. В `[Vehicle]` — Accelerate, BrakeReverse,
 SteerLeft, SteerRight, ParkingBrake, Horn, SpecialMission, TurretModifier
 ExitVehicle, Pause и ChangeWeapon. Профили полностью независимы: назначения
 `[GBA]` действуют только в Classic и меню, а в Enhanced используются только
@@ -38,6 +38,7 @@ EnterVehicle = F
 ChangeWeapon = Tab
 Pause = Return
 AuxiliaryR = H
+Aim = MouseRight
 
 [Vehicle]
 Accelerate = W, Up
@@ -63,7 +64,9 @@ ChangeWeapon = Tab
 
 P, Escape, F5, F6, F8 и F11 зарезервированы для окна. По умолчанию левая
 кнопка воспроизводит исходный Fire. Опциональный **Mouse aim (exp.)** в конце
-On-foot bindings отделяет взгляд/выстрел от WASD: персонаж смотрит на курсор.
+On-foot bindings отделяет взгляд/выстрел от WASD при удержании Aim (по умолчанию
+ПКМ). Без удержания курсор не поворачивает персонажа. Aim переназначается
+как обычное действие, собственных кнопок GBA не отправляет.
 Настройка сохраняется как `MouseAim = true` рядом с Mode перед `[GBA]`;
 отсутствие поля означает false. F5 перечитывает её вместе с привязками,
 F8 → Classic временно отключает прицеливание. [Устройство и проверки](MOUSE_AIM.md).
