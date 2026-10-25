@@ -283,14 +283,39 @@ impl Desktop {
         rom: &[u8],
         language: Option<&crate::localization::Language>,
     ) -> Result<(), String> {
+        let region = self.menu_skin.as_ref().map_or(0, |s| s.region());
         let mut skin = crate::game_menu::Skin::load(rom)?;
         std::sync::Arc::get_mut(&mut skin)
             .unwrap()
             .apply_language(language)?;
+        std::sync::Arc::get_mut(&mut skin)
+            .unwrap()
+            .set_region(region);
         self.menu_skin = Some(skin);
+        if let Some(menu) = self.menu.as_mut() {
+            menu.skin = self.menu_skin.clone();
+            menu.invalidate();
+        }
         Ok(())
     }
+    pub fn sync_menu_region(&mut self, bus: &gba_core::MemMap) {
+        let Some(region) = crate::game_menu::current_region(bus) else {
+            return;
+        };
+        let Some(skin) = self.menu_skin.as_mut() else {
+            return;
+        };
+        if skin.region() == region {
+            return;
+        }
+        std::sync::Arc::make_mut(skin).set_region(region);
+        if let Some(menu) = self.menu.as_mut() {
+            menu.skin = self.menu_skin.clone();
+            menu.invalidate();
+        }
+    }
     pub fn observe_game_menu(&mut self, machine: &gba_core::Machine, key: u32) {
+        self.sync_menu_region(&machine.bus);
         self.game_menu.observe(machine, key);
     }
     pub fn menu_pixels(&self) -> Result<Option<Vec<u8>>, String> {
@@ -962,6 +987,58 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires USA ROM, isolated SDL driver and diagnostic directory"]
+    fn island_menu_backgrounds_refresh_pause_and_cached_options() {
+        use super::*;
+        let root = std::path::PathBuf::from(std::env::var_os("GTA_ISLAND_TEST_DIR").unwrap())
+            .join("menus");
+        std::fs::create_dir_all(&root).unwrap();
+        let rom = std::fs::read("roms/usa.gba").unwrap();
+        let mut m = gba_core::Machine::new(rom);
+        let path = root.join("controls.cfg");
+        std::fs::write(&path, crate::controls::Controls::default_file()).unwrap();
+        let mut ui = Desktop::new(path).unwrap();
+        ui.set_menu_skin(&m.bus.rom, None).unwrap();
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let mut images = Vec::new();
+        for (i, region) in [0u32, 1, 2, 0].into_iter().enumerate() {
+            m.bus.ewram[0x303d0..0x303d4].copy_from_slice(&region.to_le_bytes());
+            m.cpu.regs[0] = crate::game_menu::ROOT;
+            m.cpu.regs[1] = 0;
+            ui.observe_game_menu(&m, 0x080011ed);
+            let mut ppm = b"P6\n720 480\n255\n".to_vec();
+            ppm.extend(ui.menu_pixels().unwrap().unwrap());
+            std::fs::write(root.join(format!("pause-{i}-{region}.ppm")), ppm).unwrap();
+            if i == 0 {
+                ui.open_options(crate::render_settings::Settings::default(), false);
+            }
+            ui.present_paused(&mut textures).unwrap();
+            let pixels = ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+            let (w, h) = ui.canvas.output_size().unwrap();
+            let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+            ppm.extend(&pixels);
+            std::fs::write(root.join(format!("options-{i}-{region}.ppm")), ppm).unwrap();
+            assert_eq!(ui.menu_skin.as_ref().unwrap().region(), region as usize);
+            assert_eq!(
+                ui.menu.as_ref().unwrap().skin.as_ref().unwrap().region(),
+                region as usize
+            );
+            images.push(pixels);
+        }
+        assert_ne!(images[0], images[1]);
+        assert_ne!(images[1], images[2]);
+        assert_eq!(images[0], images[3]);
+        // No valid region during unload: retain the active skin, including
+        // rebuilding fonts after a language change.
+        m.bus.ewram[0x303d0..0x303d4].copy_from_slice(&1u32.to_le_bytes());
+        ui.sync_menu_region(&m.bus);
+        m.bus.ewram[0x303d0..0x303d4].copy_from_slice(&0x7e7eu32.to_le_bytes());
+        ui.sync_menu_region(&m.bus);
+        ui.set_menu_skin(&m.bus.rom, None).unwrap();
+        assert_eq!(ui.menu_skin.as_ref().unwrap().region(), 1);
+    }
     #[test]
     #[ignore = "requires isolated SDL dummy driver and output directory"]
     fn cheat_panel_real_sdl() {

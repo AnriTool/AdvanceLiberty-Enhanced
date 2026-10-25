@@ -27,8 +27,21 @@ fn rgb(v: u16) -> Color {
     Color::RGB(c(0), c(5), c(10))
 }
 
+pub fn current_region(bus: &gba_core::MemMap) -> Option<usize> {
+    if bus.rom.get(0xac..0xb0) != Some(b"BGTE") {
+        return None;
+    }
+    // USA getter 08050f00 reads the current island at 020303d0.
+    // Unload writes 0x7e7e; keep the last valid skin through that transition.
+    word(&bus.ewram, 0x303d0)
+        .filter(|r| *r < 3)
+        .map(|r| r as usize)
+}
+
+#[derive(Clone)]
 pub struct Skin {
-    background: Vec<Color>,
+    backgrounds: Vec<Vec<Color>>,
+    region: usize,
     glyphs: Vec<u8>,
     widths: Vec<u8>,
     palette: Vec<Color>,
@@ -49,23 +62,41 @@ impl Skin {
         let widths = read(0x1774)?
             .checked_sub(0x08000000)
             .ok_or("Invalid width pointer")? as usize;
-        let mut background = Vec::with_capacity(240 * 160);
-        // 30x20 text tilemap, 4bpp tiles, per-cell flips and palette banks.
-        for y in 0..160 {
-            for x in 0..240 {
-                let a = 0xc5cce4 + (y / 8 * 30 + x / 8) * 2;
-                let t = read(a)? as u16;
-                let xx = if t & 1024 != 0 { 7 - x % 8 } else { x % 8 };
-                let yy = if t & 2048 != 0 { 7 - y % 8 } else { y % 8 };
-                let b = *rom
-                    .get(0xc58c44 + (t as usize & 1023) * 32 + yy * 4 + xx / 2)
-                    .ok_or("Invalid background tile")?;
-                let mut v = (b >> (4 * (xx % 2))) as usize & 15;
-                if v != 0 {
-                    v += (t as usize >> 12) * 16;
+        let mut backgrounds = Vec::with_capacity(3);
+        // Original Portland / Staunton / Shoreside image descriptors, not tints.
+        for descriptor in [0xc98f60, 0xc98f7c, 0xc98f98] {
+            let pointer = |o| -> Result<usize, String> {
+                let p = read(descriptor + o)?;
+                if p >> 24 != 8 {
+                    return Err("Invalid menu background pointer".into());
                 }
-                background.push(rgb(read(0x330940 + v * 2)? as u16));
+                Ok((p - 0x08000000) as usize)
+            };
+            if read(descriptor + 20)? != 0x0014001e {
+                return Err("Invalid menu background size".into());
             }
+            let palette = pointer(0)?;
+            let tiles = pointer(8)?;
+            let map = pointer(16)?;
+            let mut background = Vec::with_capacity(240 * 160);
+            // 30x20 text tilemap, 4bpp tiles, per-cell flips and palette banks.
+            for y in 0..160 {
+                for x in 0..240 {
+                    let a = map + (y / 8 * 30 + x / 8) * 2;
+                    let t = read(a)? as u16;
+                    let xx = if t & 1024 != 0 { 7 - x % 8 } else { x % 8 };
+                    let yy = if t & 2048 != 0 { 7 - y % 8 } else { y % 8 };
+                    let b = *rom
+                        .get(tiles + (t as usize & 1023) * 32 + yy * 4 + xx / 2)
+                        .ok_or("Invalid background tile")?;
+                    let mut v = (b >> (4 * (xx % 2))) as usize & 15;
+                    if v != 0 {
+                        v += (t as usize >> 12) * 16;
+                    }
+                    background.push(rgb(read(palette + v * 2)? as u16));
+                }
+            }
+            backgrounds.push(background);
         }
         let mut labels = Vec::new();
         for i in 0..618 {
@@ -81,7 +112,8 @@ impl Skin {
             labels.push(tail[..n].to_vec());
         }
         Ok(Arc::new(Self {
-            background,
+            backgrounds,
+            region: 0,
             glyphs: rom
                 .get(font..font + 224 * 256)
                 .ok_or("Invalid font atlas")?
@@ -136,6 +168,14 @@ impl Skin {
             .collect::<Result<_, String>>()?;
         Ok(())
     }
+    pub fn region(&self) -> usize {
+        self.region
+    }
+    pub fn set_region(&mut self, region: usize) {
+        if region < self.backgrounds.len() {
+            self.region = region;
+        }
+    }
     pub fn host(&self, id: &str) -> &[u8] {
         self.host.get(id).map_or(b"?", Vec::as_slice)
     }
@@ -177,12 +217,13 @@ impl Skin {
         self.text(canvas, x, y, &encoded, scale, limit)
     }
     pub fn background<T: RenderTarget>(&self, canvas: &mut Canvas<T>) -> Result<(), String> {
+        let background = &self.backgrounds[self.region];
         for y in 0..160 {
             let mut x = 0;
             while x < 240 {
-                let c = self.background[y * 240 + x];
+                let c = background[y * 240 + x];
                 let start = x;
-                while x < 240 && self.background[y * 240 + x] == c {
+                while x < 240 && background[y * 240 + x] == c {
                     x += 1;
                 }
                 canvas.set_draw_color(c);
@@ -705,6 +746,19 @@ mod native_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn island_region_rejects_unload_sentinel_and_other_roms() {
+        let mut rom = vec![0; 0x100];
+        rom[0xac..0xb0].copy_from_slice(b"BGTE");
+        let mut bus = gba_core::MemMap::new(rom);
+        for value in [0u32, 1, 2, 3, 0x7e7e, u32::MAX] {
+            bus.ewram[0x303d0..0x303d4].copy_from_slice(&value.to_le_bytes());
+            assert_eq!(current_region(&bus), (value < 3).then_some(value as usize));
+        }
+        bus.ewram[0x303d0..0x303d4].fill(0);
+        bus.rom[0xac] = 0;
+        assert_eq!(current_region(&bus), None);
+    }
     use super::*;
     fn event(key: Keycode) -> Event {
         Event::KeyDown {

@@ -913,6 +913,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "desktop")]
         if let Some(ui) = desktop.as_mut() {
             ui.sync_cheats(&m.bus);
+            ui.sync_menu_region(&m.bus);
             let Some(keys) = ui.poll(&mut render_settings, preview_enabled, control_context)?
             else {
                 break;

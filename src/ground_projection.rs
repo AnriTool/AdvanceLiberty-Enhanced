@@ -122,7 +122,7 @@ impl Observer {
     }
 }
 
-// USA terrain: 256x256 map cells; each cell references a 5x5 grid of
+// USA terrain: 256x256 (Portland) or 128x256 map cells; each cell references a 5x5 grid of
 // 8x8 indexed tiles. The GPU's small resident cache omits offscreen tiles.
 #[derive(Clone)]
 pub struct WorldGround {
@@ -131,6 +131,7 @@ pub struct WorldGround {
     blocks: usize,
     atlas: usize,
     shift: usize,
+    rows: usize,
 }
 impl WorldGround {
     pub fn capture(source: &MemMap, rom: std::sync::Arc<Vec<u8>>) -> Option<Self> {
@@ -146,19 +147,44 @@ impl WorldGround {
         };
         let shift =
             u32::from_le_bytes(source.ewram.get(0x1ce74..0x1ce78)?.try_into().ok()?) as usize;
-        if shift != 8 {
+        if !matches!(shift, 7 | 8) {
             return None;
         }
+        let map = pointer(0x1ce60)?;
+        let blocks = pointer(0x1ce64)?;
+        let atlas = pointer(0x1ce68)?;
+        let read = |o| Some(u32::from_le_bytes(rom.get(o..o + 4)?.try_into().ok()?));
+        // The island headers contain independent width/height in world units.
+        // Match the live resource pointers, rather than the current mission ID:
+        // loading can change that ID before the old scene has been retired.
+        let descriptor = [0xcabe98, 0xcabed4, 0xcabf10].into_iter().find(|&o| {
+            [map, blocks, atlas]
+                .into_iter()
+                .enumerate()
+                .all(|(i, p)| read(o + 12 + i * 4) == Some(p as u32 + 0x08000000))
+        })?;
+        let width = read(descriptor + 4)? as usize;
+        let height = read(descriptor + 8)? as usize;
+        if width % 64 != 0
+            || height % 64 != 0
+            || width / 64 != 1 << shift
+            || height == 0
+            || height / 64 > 256
+        {
+            return None;
+        }
+        let rows = height / 64;
         let result = Self {
             rom,
-            map: pointer(0x1ce60)?,
-            blocks: pointer(0x1ce64)?,
-            atlas: pointer(0x1ce68)?,
+            map,
+            blocks,
+            atlas,
             shift,
+            rows,
         };
         result
             .rom
-            .get(result.map..result.map + (1 << shift) * (1 << shift) * 2)?;
+            .get(result.map..result.map + (1 << shift) * rows * 2)?;
         result.rom.get(result.blocks..result.blocks + 50)?;
         result.rom.get(result.atlas..result.atlas + 64)?;
         Some(result)
@@ -167,7 +193,7 @@ impl WorldGround {
         let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
         let (tx, ty) = (x / 8, y / 8);
         let cells = 1 << self.shift;
-        if tx / 5 >= cells || ty / 5 >= cells {
+        if tx / 5 >= cells || ty / 5 >= self.rows {
             return None;
         }
         let read = |o: usize| -> Option<usize> {
@@ -499,6 +525,103 @@ pub fn export(source: &MemMap, path: &Path) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn island_ground_uses_each_map_width_and_checks_its_boundary() {
+        for shift in [7, 8] {
+            let mut rom = vec![0; 0xcabf4c];
+            rom[0xac..0xb0].copy_from_slice(b"BGTE");
+            let cells = 1usize << shift;
+            for (o, v) in [
+                (4, (cells * 64) as u32),
+                (8, 256 * 64),
+                (12, 0x08001000),
+                (16, 0x08021000),
+                (20, 0x08022000),
+            ] {
+                rom[0xcabe98 + o..0xcabe98 + o + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            // Cell (1,1) must be read with this island's row stride.
+            rom[0x1000 + (cells + 1) * 2..0x1000 + (cells + 1) * 2 + 2]
+                .copy_from_slice(&1u16.to_le_bytes());
+            rom[0x1000 + (200 * cells + 1) * 2..0x1000 + (200 * cells + 1) * 2 + 2]
+                .copy_from_slice(&1u16.to_le_bytes());
+            for i in 0..25 {
+                rom[0x21000 + 50 + i * 2..0x21000 + 52 + i * 2]
+                    .copy_from_slice(&1u16.to_le_bytes());
+            }
+            rom[0x22040..0x22080].fill(1);
+            let mut source = MemMap::new(Vec::new());
+            for (o, v) in [
+                (0x1ce60, 0x08001000u32),
+                (0x1ce64, 0x08021000),
+                (0x1ce68, 0x08022000),
+                (0x1ce74, shift),
+            ] {
+                source.ewram[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            source.palette[2..4].copy_from_slice(&0x03e0u16.to_le_bytes());
+            let world = WorldGround::capture(&source, std::sync::Arc::new(rom)).unwrap();
+            assert_eq!(world.pixel(&source, 40, 40), Some(0x03e0));
+            assert_eq!(world.pixel(&source, 40, 8000), Some(0x03e0));
+            assert_eq!(world.pixel(&source, 40, 10240), None);
+            assert_eq!(world.pixel(&source, 0, 0), None);
+            assert_eq!(world.pixel(&source, (cells * 40) as i32, 40), None);
+            assert_eq!(world.pixel(&source, -1, 40), None);
+        }
+    }
+    #[test]
+    #[ignore = "requires USA ROM and captured three-island session"]
+    fn island_ground_matches_resident_cache_in_all_three_regions() {
+        let directory = std::path::PathBuf::from(std::env::var_os("GTA_ISLAND_TEST_DIR").unwrap())
+            .join("capture");
+        let rom = std::sync::Arc::new(std::fs::read("roms/usa.gba").unwrap());
+        let mut regions = std::collections::BTreeSet::new();
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "ewram") {
+                continue;
+            }
+            let mut source = MemMap::new(Vec::new());
+            for (ext, target) in [
+                ("ewram", &mut source.ewram),
+                ("io", &mut source.io),
+                ("iwram", &mut source.iwram),
+                ("vram", &mut source.vram),
+                ("palette", &mut source.palette),
+            ] {
+                target.copy_from_slice(&std::fs::read(path.with_extension(ext)).unwrap());
+            }
+            if half(&source.io, 0) & 0x487 != 0x401 {
+                continue;
+            }
+            let world = WorldGround::capture(&source, rom.clone()).unwrap();
+            let region = u32::from_le_bytes(source.ewram[0x303d0..0x303d4].try_into().unwrap());
+            if region >= 3 {
+                continue;
+            }
+            regions.insert(region);
+            let [rx, ry, pa, pd] = continuous_parameters(&source);
+            for y in (16..144).step_by(3) {
+                for x in (16..224).step_by(3) {
+                    let tx = ((rx + pa * x as f64) / 256.0).floor() as i32;
+                    let ty = ((ry + pd * y as f64) / 256.0).floor() as i32;
+                    if let Some(resident) = texel_layer(&source, tx, ty) {
+                        assert_eq!(
+                            world.pixel(&source, tx, ty),
+                            Some(resident),
+                            "{} region={region} {tx},{ty}",
+                            path.display()
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(regions, std::collections::BTreeSet::from([0, 1, 2]));
+        assert!(checked > 10000);
+        println!("island_ground verified {checked} samples across {regions:?}");
+    }
     use super::*;
     #[test]
     fn moving_camera_uses_world_terrain_throughout_viewport_without_stale_cache() {
@@ -529,6 +652,7 @@ mod tests {
             blocks: 0x20000,
             atlas: 0x20000 + 50,
             shift: 8,
+            rows: 256,
         };
         for aspect in [
             crate::viewport::Aspect::Original,
