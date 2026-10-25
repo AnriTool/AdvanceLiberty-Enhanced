@@ -66,6 +66,26 @@ class Packs(unittest.TestCase):
         self.catalog = catalog()
         self.pack = texts.new_pack(self.catalog, 'ru', 'Русский', font_source=texts.legacy_font())
 
+    def test_color_font_palette_geometry_and_spacing_are_validated(self):
+        self.pack['color_font']=dict(width=2,height=2,advance=6,palette=list(range(16)),glyphs={c:['12','89'] for c in self.pack['alphabet']})
+        texts.upgrade_pack(self.pack)
+        copy_pack=texts.new_pack(self.catalog,'ru','Russian',font_source=self.pack)
+        self.assertEqual(copy_pack['color_font'],self.pack['color_font'])
+        for field,value in [('width',17),('advance',7),('palette',[0,1]),('glyphs',{})]:
+            bad=copy.deepcopy(self.pack);bad['color_font'][field]=value
+            with self.assertRaises(texts.TextError):texts.upgrade_pack(bad)
+        bad=copy.deepcopy(self.pack);bad['color_font']['glyphs']['А']=['zz','12']
+        with self.assertRaises(texts.TextError):texts.upgrade_pack(bad)
+
+    def test_ui_entries_preserve_letter_substitutions_and_line_breaks(self):
+        self.catalog['scope']='confirmed-story-and-ui-tables'
+        self.catalog['entries'].append(dict(id='ui.022c',texts={lang:'USE %A TO DESTROY %9 VEHICLES.\nNEXT' for lang in texts.LANGUAGES}))
+        self.pack['entries']['ui.022c']='ИСПОЛЬЗУЙ %A ДЛЯ УНИЧТОЖЕНИЯ %9 МАШИН.\nДАЛЕЕ'
+        self.assertTrue(texts.validate_pack(self.catalog,self.pack)['runtime_supported'])
+        self.pack['entries']['ui.022c']='ИСПОЛЬЗУЙ %9 МАШИН.'
+        with self.assertRaises(texts.TextError):
+            texts.validate_pack(self.catalog,self.pack)
+
     def test_partial_unicode_pack_and_fallback(self):
         self.pack['entries']['text.00cabf84'] = 'МИССИЯ ВЫПОЛНЕНА'
         result = texts.validate_pack(self.catalog, self.pack)

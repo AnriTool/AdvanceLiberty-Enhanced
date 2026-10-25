@@ -154,6 +154,7 @@ pub enum Command {
 pub struct Menu {
     pub controls: Controls,
     pub prefs: Preferences,
+    pub language_requested: bool,
     section: Option<usize>,
     hud_page: bool,
     graphics_page: bool,
@@ -174,6 +175,7 @@ impl Menu {
             hud_page: false,
             graphics_page: false,
             language_page: false,
+            language_requested: false,
             languages: Vec::new(),
             row: 0,
             capture: None,
@@ -185,6 +187,10 @@ impl Menu {
     pub fn with_languages(mut self, languages: Vec<crate::localization::Choice>) -> Self {
         self.languages = languages;
         self
+    }
+    pub fn refresh_languages(&mut self, languages: Vec<crate::localization::Choice>) {
+        self.languages = languages;
+        self.invalidate();
     }
     fn language_label(&self) -> String {
         self.prefs
@@ -256,7 +262,8 @@ impl Menu {
                 .row
                 .checked_sub(1)
                 .map(|i| self.languages[i].file.clone());
-            self.message = "Language selected. Save, then restart the game.".into();
+            self.language_requested = true;
+            self.message = "Language selected. Save to apply in this game.".into();
             return Command::None;
         }
         if self.graphics_page {
@@ -668,7 +675,7 @@ impl Menu {
         };
         text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
         let message = if self.language_page && self.message.is_empty() {
-            "Packs: languages/*.json. Save, then restart the game."
+            "Packs: languages/*.json. Save to apply now."
         } else if aim_row {
             "Hold Aim to face cursor. Default: right mouse button."
         } else if self.graphics_page && self.row == 1 {
@@ -964,7 +971,7 @@ mod tests {
         menu.event(&key(Keycode::Down));
         menu.event(&key(Keycode::Return));
         assert_eq!(menu.prefs.language.as_deref(), Some("ru-demo.json"));
-        assert!(menu.message.contains("restart"));
+        assert!(menu.message.contains("apply"));
         menu.event(&key(Keycode::Escape));
         assert_eq!(menu.row, 8);
         menu.event(&key(Keycode::Down));

@@ -22,6 +22,8 @@ EU_SHA = '48892e001bd86836d619a875b2a0605927cae9f922224686efa01bc7e470272a'
 RU_SHA = 'e10f0f044ba3f119440f5bf2ddfe9aeaae67c288d3d82850237dd75e688f6d1e'
 BASE = 0x08000000
 MAX_TEXT_BYTES = 4096
+UI_BANK = 0xec4324
+UI_COUNT = 618
 FORMAT = 'gta-advance-text-catalog-v1'
 PACK_VERSION = 2
 LEGACY_PACK_FORMAT = 'gta-advance-language-pack-v1'
@@ -130,21 +132,30 @@ def build_catalog(data):
     for group in groups:
         texts = {}
         for language, raw in group['texts'].items():
-            if any(byte < 0x20 or 0x7f <= byte < 0xa0 for byte in raw):
+            if any(byte < 0x20 and byte not in (10,13) or 0x7f <= byte < 0xa0 for byte in raw):
                 raise TextError(f'Unexpected text control byte at {group["offset"]:08X}')
             texts[language] = raw.decode('latin-1')
         entries.append(dict(id=f'text.{group["offset"]:08x}',
                             table_offset=f'{group["offset"]:08x}',
                             string_offsets={lang: f'{ptr:08x}' for lang, ptr in group['pointers'].items()},
                             texts=texts))
+    for index in range(UI_COUNT):
+        pointers = {language: struct.unpack_from('<I',data,UI_BANK+(slot*UI_COUNT+index)*4)[0]-BASE for slot,language in enumerate(LANGUAGES)}
+        texts = {}
+        for language,pointer in pointers.items():
+            if not 0<=pointer<len(data): raise TextError('Invalid UI bank pointer')
+            end=data.find(b'\0',pointer,pointer+MAX_TEXT_BYTES+1)
+            if end<0: raise TextError('Unterminated UI text')
+            texts[language]=data[pointer:end].decode('latin-1')
+        entries.append(dict(id=f'ui.{index:04x}', pointer_offsets={lang:f'{UI_BANK+(slot*UI_COUNT+index)*4:08x}' for slot,lang in enumerate(LANGUAGES)}, string_offsets={lang:f'{ptr:08x}' for lang,ptr in pointers.items()}, texts=texts))
     return dict(format=FORMAT, base_rom_sha256=USA_SHA, languages=list(LANGUAGES),
-                scope='confirmed-five-language-tables', entries=entries)
+                scope='confirmed-story-and-ui-tables', entries=entries)
 
 
 def check_catalog(catalog):
     if not isinstance(catalog, dict) or catalog.get('format') != FORMAT or catalog.get('base_rom_sha256') != USA_SHA:
         raise TextError('Expected a USA text catalog v1')
-    if catalog.get('scope') != 'confirmed-five-language-tables':
+    if catalog.get('scope') not in ('confirmed-five-language-tables','confirmed-story-and-ui-tables'):
         raise TextError('Unsupported catalog scope')
     entries = catalog.get('entries')
     if not isinstance(entries, list) or not entries:
@@ -152,7 +163,7 @@ def check_catalog(catalog):
     seen = set()
     for entry in entries:
         identifier = entry.get('id') if isinstance(entry, dict) else None
-        if not isinstance(identifier, str) or not re.fullmatch(r'text\.[0-9a-f]{8}', identifier) or identifier in seen:
+        if not isinstance(identifier, str) or not re.fullmatch(r'(?:text\.[0-9a-f]{8}|ui\.[0-9a-f]{4})', identifier) or identifier in seen:
             raise TextError(f'Invalid or duplicate catalog ID: {identifier}')
         seen.add(identifier)
         if not isinstance(entry.get('texts'), dict) or any(not isinstance(entry['texts'].get(lang), str) for lang in LANGUAGES):
@@ -180,7 +191,11 @@ def upgrade_pack(pack, font_source=None):
     if font_source is not None:
         result['alphabet'] = copy.deepcopy(font_source.get('alphabet', ''))
         result['font'] = copy.deepcopy(font_source.get('font'))
-    allowed = {'version','language','name','fallback','alphabet','font','entries','source_rom_sha256','source_slot'}
+        if 'color_font' in font_source:
+            result['color_font']=copy.deepcopy(font_source['color_font'])
+        else:
+            result.pop('color_font',None)
+    allowed = {'version','language','name','fallback','alphabet','font','color_font','entries','source_rom_sha256','source_slot'}
     if set(result)-allowed:
         raise TextError('Unknown pack fields: ' + ', '.join(sorted(set(result)-allowed)))
     if not isinstance(result.get('language'),str) or not re.fullmatch(r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*',result['language']):
@@ -188,6 +203,7 @@ def upgrade_pack(pack, font_source=None):
     if not isinstance(result.get('name'),str) or not result['name'].strip() or result.get('fallback','en')!='en' or not isinstance(result.get('entries'),dict):
         raise TextError('Pack requires a name, entries and English fallback')
     validate_font(result.get('alphabet',''),result.get('font'))
+    validate_color_font(result.get('alphabet',''),result.get('color_font'))
     return result
 
 
@@ -228,6 +244,29 @@ def validate_font(alphabet, font):
     return mapping
 
 
+def validate_color_font(alphabet,font):
+    if font is None:return
+    if not isinstance(font,dict) or set(font)-{'width','height','advance','advances','palette','glyphs'}:
+        raise TextError('Expected a color_font object with width, height and glyphs')
+    width,height=font.get('width'),font.get('height')
+    if type(width) is not int or type(height) is not int or not 1<=width<=16 or not 1<=height<=16:
+        raise TextError('Color font must fit a 16x16 cell')
+    palette=font.get('palette',list(range(16)))
+    if not isinstance(palette,list) or len(palette)!=16 or palette[0]!=0 or any(type(p) is not int or not 0<=p<=15 for p in palette):
+        raise TextError('Color font requires 16 native palette indices (0..15), with transparent index 0')
+    advance=font.get('advance')
+    if advance is None:advance=(width+3)&~1
+    advances=font.get('advances',{})
+    if not isinstance(advances,dict) or any(type(v) is not int or not 2<=v<=18 or v%2 for v in [advance,*advances.values()]):
+        raise TextError('Color font advances must be even pixel counts from 2 to 18')
+    glyphs=font.get('glyphs')
+    if not isinstance(glyphs,dict) or set(glyphs)!=set(alphabet) or set(advances)-set(alphabet):
+        raise TextError('Color font glyphs must match alphabet exactly')
+    for c,rows in glyphs.items():
+        if not isinstance(rows,list) or len(rows)!=height or any(not isinstance(row,str) or len(row)!=width or not re.fullmatch('[.0-9a-fA-F]+',row) for row in rows):
+            raise TextError(f'Color glyph {c}: expected {height} rows of {width} hex pixels or dots')
+
+
 def new_pack(catalog, language, name, source_language=None, font_source=None):
     entries = check_catalog(catalog)
     if not re.fullmatch(r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*', language):
@@ -236,7 +275,9 @@ def new_pack(catalog, language, name, source_language=None, font_source=None):
                   entries={key: entry['texts'][source_language] if source_language else '' for key, entry in entries.items()})
     if font_source is not None:
         result.update(alphabet=copy.deepcopy(font_source.get('alphabet','')),font=copy.deepcopy(font_source.get('font')))
+        if 'color_font' in font_source:result['color_font']=copy.deepcopy(font_source['color_font'])
     validate_font(result['alphabet'],result.get('font'))
+    validate_color_font(result['alphabet'],result.get('color_font'))
     return result
 
 
@@ -257,7 +298,7 @@ def validate_pack(catalog, pack):
             raise TextError(f'Unknown text ID: {identifier}')
         if not isinstance(text, str):
             raise TextError(f'Text must be a string: {identifier}')
-        if any(ord(char) < 0x20 and char != '\n' or 0x7f <= ord(char) < 0xa0 or 0xd800 <= ord(char) <= 0xdfff for char in text):
+        if any(ord(char) < 0x20 and char not in '\n\r' or 0x7f <= ord(char) < 0xa0 or 0xd800 <= ord(char) <= 0xdfff for char in text):
             raise TextError(f'Unsupported control character: {identifier}')
         if len(text.encode('utf-8')) > 65535:
             raise TextError(f'Text exceeds 65535 UTF-8 bytes: {identifier}')
@@ -265,8 +306,9 @@ def validate_pack(catalog, pack):
             continue
         translated += 1
         original = entries[identifier]['texts']['en']
-        tokens = lambda value: sorted(token for token in re.findall(r'@[0-9]|%[0-9]+', value) if token not in ('@0', '@8', '@9'))
-        if tokens(text) != tokens(original):
+        tokens = lambda value: sorted(token for token in re.findall(r'@[0-9]|%(?:[0-9]+|[A-Z])', value) if token not in ('@0', '@8', '@9'))
+        native_source=text in entries[identifier]['texts'].values()
+        if tokens(text) != tokens(original) and not native_source:
             raise TextError(f'Preserve dynamic @ and % tokens: {identifier}')
         if len(text) > 609:
             runtime_errors.append(dict(id=identifier, reason='runtime-limit-609-characters'))
@@ -274,7 +316,9 @@ def validate_pack(catalog, pack):
             if character in custom:
                 non_latin1.add(character)
                 continue
-            if character in '\n’‘“”—–' or character.isascii() and (character.isalnum() or character in ' -_$!?\"\',.+/:;()%@') or character in 'ÜÑÉ¿ÁÓÈÍ¡ÖÀÙÄÚÌÒÏ':
+            if native_source:
+                continue
+            if character in '\n\r’‘“”—–' or character.isascii() and (character.isalnum() or character in ' -_$!?\"\',.+/:;()%@') or character in 'ÜÑÉ¿ÁÓÈÍ¡ÖÀÙÄÚÌÒÏ':
                 continue
             runtime_errors.append(dict(id=identifier, reason=f'missing-glyph-U+{ord(character):04X}'))
             break
@@ -316,6 +360,20 @@ def import_rom(usa, donor, catalog, language, name, slot, charmap=None):
                 raise TextError('Unmapped source bytes: ' + ', '.join(f'{byte:02X}' for byte in missing))
             text = ''.join(mapping.get(byte, chr(byte)) for byte in raw)
         pack['entries'][f'text.{original["offset"]:08x}'] = text
+    bank=UI_BANK+(0x3b0 if digest(donor)==EU_SHA else 0)
+    slot_index=LANGUAGES.index(slot)
+    for index in range(UI_COUNT):
+        pointer=struct.unpack_from('<I',donor,bank+(slot_index*UI_COUNT+index)*4)[0]-BASE
+        if not 0<=pointer<len(donor): raise TextError('Invalid donor UI pointer')
+        end=donor.find(b'\0',pointer,pointer+MAX_TEXT_BYTES+1)
+        if end<0: raise TextError('Unterminated donor UI string')
+        raw=donor[pointer:end]
+        if mapping is None:
+            text=raw.decode('latin-1')
+        else:
+            if any(byte>=128 and byte not in mapping for byte in raw): raise TextError('Unmapped donor UI bytes')
+            text=''.join(mapping.get(byte,chr(byte)) for byte in raw)
+        pack['entries'][f'ui.{index:04x}']=text
     pack['source_rom_sha256'] = digest(donor)
     pack['source_slot'] = slot
     validate_pack(catalog, pack)

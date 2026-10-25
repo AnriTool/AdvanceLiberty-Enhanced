@@ -532,14 +532,12 @@ impl Preview {
                         graphics.palette.clone_from(&m.bus.palette);
                         graphics.oam.clone_from(&m.bus.oam);
                         self.graphics_ns += graphics_start.elapsed().as_nanos();
-                        let ground_world = if self.wide {
+                        let ground_world = {
                             let rom = self
                                 .ground_rom
                                 .get_or_insert_with(|| std::sync::Arc::new(m.bus.rom.clone()))
                                 .clone();
                             ground_projection::WorldGround::capture(&m.bus, rom)
-                        } else {
-                            None
                         };
                         if materials.side_faces > 0 {
                             self.event(

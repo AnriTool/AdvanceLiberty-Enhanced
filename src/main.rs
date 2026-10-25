@@ -166,7 +166,7 @@ fn input(path: &str) -> Result<Vec<(u64, u16)>, Box<dyn std::error::Error>> {
         return Err("Invalid input header".into());
     }
     let mut points = Vec::new();
-    for line in lines.filter(|l| !l.trim().is_empty()) {
+    for line in lines.filter(|l| !l.trim().is_empty() && !l.starts_with("# language ")) {
         let (f, k) = line.split_once(' ').ok_or("Invalid input line")?;
         let frame = f.parse()?;
         let mask = u16::from_str_radix(k, 16)?;
@@ -500,6 +500,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         input(&args[1])?
     };
+    let recorded_language_changes = if args[1] == "-" {
+        Vec::new()
+    } else {
+        localization::changes(std::path::Path::new(&args[1]))?
+    };
+    if !recorded_language_changes.is_empty()
+        && (mode == "interp" || force_interpreter || check_options.is_some())
+    {
+        return Err("Recorded language changes require native mode".into());
+    }
     let aim_path = aim_path.or_else(|| {
         if args[1] == "-" {
             return None;
@@ -606,7 +616,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let rescue = lib
                     .get::<*const u32>(b"advance_native_rescue_v1")
                     .is_ok_and(|version| **version == 1);
-                if (scene_options.is_some() || preview_enabled || language.is_some()) && !rescue {
+                if (scene_options.is_some()
+                    || preview_enabled
+                    || language.is_some()
+                    || mode == "play"
+                    || !recorded_language_changes.is_empty())
+                    && !rescue
+                {
                     return Err(
                         "Scene replay/language packs require one-instruction AOT libraries".into(),
                     );
@@ -629,7 +645,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             libraries.push(lib);
         }
     }
-    let mut m = Machine::new(rom);
+    let mut language_changes = recorded_language_changes.into_iter().peekable();
+    let mut active_language_file = language_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .map(str::to_owned);
+    let mut m = Machine::new(rom.clone());
     if let Some(language) = language.as_mut() {
         language.install(&mut m);
         println!(
@@ -733,6 +755,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     while m.bus.frames < frames {
         mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
+        while language_changes
+            .peek()
+            .is_some_and(|(frame, _)| *frame == before)
+        {
+            let (_, bytes) = language_changes.next().unwrap();
+            localization::change_live(&mut m, &rom, &mut language, bytes.clone())?;
+            if let Some(recording) = recording.as_mut() {
+                recording.language_change(before, bytes.as_deref())?;
+            }
+        }
         let i = keys.partition_point(|&(f, _)| f <= before);
         m.bus.keys = if i == 0 { 0x3ff } else { keys[i - 1].1 };
         let control_context = control_context::detect(&m.bus);
@@ -757,6 +789,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 break;
             };
+            if ui.take_language_scan() {
+                ui.set_languages(localization::discover(&language_directory, &rom));
+            }
+            if let Some(selected) = ui.take_language_change() {
+                let bytes = selected
+                    .as_ref()
+                    .map(|name| fs::read(language_directory.join(name)))
+                    .transpose();
+                let result = bytes
+                    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+                    .and_then(|bytes| {
+                        if force_interpreter {
+                            return Err("Live language changes require native mode".into());
+                        }
+                        localization::change_live(&mut m, &rom, &mut language, bytes.clone())?;
+                        if let Some(recording) = recording.as_mut() {
+                            recording.language_change(before, bytes.as_deref())?;
+                        }
+                        Ok(())
+                    });
+                match result {
+                    Ok(()) => {
+                        active_language_file = selected;
+                        eprintln!("Language applied live at frame {before}");
+                    }
+                    Err(error) => {
+                        ui.language_error(active_language_file.clone(), &error.to_string())
+                    }
+                }
+            }
             if args[1] == "-" {
                 m.bus.keys = keys;
             }

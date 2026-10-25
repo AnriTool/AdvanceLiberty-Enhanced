@@ -361,15 +361,14 @@ pub fn continuous_layer_world(
             let mut previous_x = None;
             let mut pixel = None;
             for (x, &tx) in xs.iter().enumerate() {
-                if previous_x != Some(tx) || x == view.padding || x == view.padding + 240 * scale {
-                    pixel = if view.padding != 0
-                        && (x < view.padding || x >= view.padding + 240 * scale)
-                    {
-                        world
-                            .and_then(|world| world.pixel(source, tx, ty))
-                            .or_else(|| texel_layer(source, tx, ty))
-                    } else {
-                        texel_layer(source, tx, ty)
+                if previous_x != Some(tx) {
+                    // The resident GBA cache only covers the guest camera. During
+                    // host camera motion/zoom its stale tiles can enter even the
+                    // central viewport. Use the same world map across the frame;
+                    // transparent/out-of-map samples must not expose that cache.
+                    pixel = match world {
+                        Some(world) => world.pixel(source, tx, ty),
+                        None => texel_layer(source, tx, ty),
                     };
                     previous_x = Some(tx);
                 }
@@ -501,6 +500,68 @@ pub fn export(source: &MemMap, path: &Path) -> Result<(), Box<dyn std::error::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn moving_camera_uses_world_terrain_throughout_viewport_without_stale_cache() {
+        let mut source = MemMap::new(Vec::new());
+        // Resident tile data belongs to a different part of the map.
+        source.io[0xc..0xe].copy_from_slice(&0x2080u16.to_le_bytes());
+        source.vram[..64].fill(9);
+        source.palette[18..20].copy_from_slice(&0x7c00u16.to_le_bytes());
+        source.palette[2..4].copy_from_slice(&0x03e0u16.to_le_bytes());
+        for (o, v) in [
+            (0x14, 300 * 65536i32),
+            (0x18, 300 * 65536),
+            (0x68, 104858),
+            (0x6c, 104858),
+        ] {
+            source.iwram[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let mut rom = vec![0; 0x20000 + 50 + 64];
+        // Every world tile is green, with one transparent column.
+        for y in 0..8 {
+            for x in 1..8 {
+                rom[0x20000 + 50 + y * 8 + x] = 1;
+            }
+        }
+        let world = WorldGround {
+            rom: std::sync::Arc::new(rom),
+            map: 0,
+            blocks: 0x20000,
+            atlas: 0x20000 + 50,
+            shift: 8,
+        };
+        for aspect in [
+            crate::viewport::Aspect::Original,
+            crate::viewport::Aspect::Wide,
+        ] {
+            let view = crate::viewport::View::new(3, aspect);
+            for zoom in [0.95, 1.0, 1.05] {
+                let delta = [32768, -16384];
+                let layer = continuous_layer_world(&source, view, delta, zoom, Some(&world));
+                let [rx, ry, pa, pd] = continuous_parameters(&source);
+                let mut transparent = 0;
+                for y in 0..view.height {
+                    for x in 0..view.width {
+                        let sx = 120.0 + (view.source_x(x) - 120.0) / zoom;
+                        let sy = 120.0 + (y as f64 / 3.0 - 120.0) / zoom;
+                        let tx =
+                            ((rx + delta_reference(delta[0]) + pa * sx) / 256.0).floor() as i32;
+                        let ty =
+                            ((ry + delta_reference(delta[1]) + pd * sy) / 256.0).floor() as i32;
+                        let expected = if tx < 0 || ty < 0 || tx % 8 == 0 {
+                            None
+                        } else {
+                            Some(0x03e0)
+                        };
+                        assert_eq!(layer[y * view.width + x], expected, "{x},{y} zoom={zoom}");
+                        transparent += usize::from(expected.is_none());
+                    }
+                }
+                assert!(transparent > 0);
+                assert!(layer.iter().any(Option::is_some));
+            }
+        }
+    }
     #[test]
     #[ignore = "local ROM and captured scene cross-check; ADVANCE_WORLD_ROM and ADVANCE_HUD_SCENES"]
     fn world_ground_matches_resident_tiles_in_captured_gameplay() {

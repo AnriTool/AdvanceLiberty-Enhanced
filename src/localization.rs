@@ -1,4 +1,5 @@
 //! Opt-in external text data for the verified USA image. No guest code patches.
+use crate::language_font::{ColorDefinition, ColorFont};
 pub use crate::language_font::{Definition as FontDefinition, Font};
 use gba_core::Machine;
 use serde::Deserialize;
@@ -46,44 +47,67 @@ pub fn directory(executable: &Path) -> PathBuf {
     parent.join("languages")
 }
 
-/// Export editable English once. Never replace a translator's existing file,
-/// even when it is incomplete or no longer valid JSON.
+/// Export English and add newly discovered IDs, preserving every existing value.
+/// Invalid files are left alone so unfinished translator edits remain recoverable.
 pub fn ensure_english(
     directory: &Path,
     rom: &[u8],
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let path = directory.join("en.json");
-    if path.try_exists()? {
-        return Ok(None);
-    }
+    let previous = fs::read(&path).ok();
+    let mut pack = if let Some(bytes) = previous.as_ref() {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(
+            bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes),
+        ) else {
+            return Ok(None);
+        };
+        if value.get("version").and_then(|v| v.as_u64()) != Some(2)
+            || value.get("language").and_then(|v| v.as_str()) != Some("en")
+            || !value.get("entries").is_some_and(|v| v.is_object())
+        {
+            return Ok(None);
+        }
+        value
+    } else {
+        serde_json::json!({"version":2,"language":"en","name":"English (editable)","alphabet":"","entries":{}})
+    };
     if format!("{:x}", Sha256::digest(rom)) != USA {
         return Err("English export requires the verified USA ROM".into());
     }
-    let tables = tables(rom);
-    if tables.len() != 1156 {
+    let tables = entries(rom);
+    if tables.len() != 1156 + UI_COUNT {
         return Err("USA language table structure differs".into());
     }
-    let entries: BTreeMap<_, _> = tables
-        .iter()
-        .map(|(id, offset)| {
-            let original = string(rom, word(rom, offset + 4)).unwrap();
-            let text: String = original.iter().map(|&byte| char::from(byte)).collect();
-            (id.clone(), text)
-        })
-        .collect();
-    let pack = serde_json::json!({
-        "version": 2, "language": "en", "name": "English (editable)",
-        "alphabet": "", "entries": entries
-    });
+    let mut added = 0;
+    for (id, pointers) in tables {
+        let target = pack["entries"].as_object_mut().unwrap();
+        if !target.contains_key(&id) {
+            let original: String = string(rom, word(rom, pointers[0]))
+                .unwrap()
+                .iter()
+                .map(|&byte| char::from(byte))
+                .collect();
+            target.insert(id, original.into());
+            added += 1;
+        }
+    }
+    if previous.is_some() && added == 0 {
+        return Ok(None);
+    }
     let mut bytes = serde_json::to_vec_pretty(&pack)?;
     bytes.push(b'\n');
     // The generated pack must pass exactly the same checks as authored packs.
     Language::from_bytes(bytes.clone(), rom)?;
     fs::create_dir_all(directory)?;
+    let output = if previous.is_some() {
+        directory.join(format!(".en-additions-{}.tmp", std::process::id()))
+    } else {
+        path.clone()
+    };
     let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)
+        .open(&output)
     {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(None),
@@ -91,6 +115,14 @@ pub fn ensure_english(
     };
     file.write_all(&bytes)?;
     file.sync_all()?;
+    drop(file);
+    if previous.is_some() {
+        if fs::read(&path)? != previous.unwrap() {
+            fs::remove_file(&output)?;
+            return Err("English pack changed while adding new IDs; retry next startup".into());
+        }
+        fs::rename(&output, &path)?;
+    }
     Ok(Some(path))
 }
 
@@ -168,6 +200,8 @@ struct PackV2 {
     alphabet: String,
     #[serde(default)]
     font: Option<FontDefinition>,
+    #[serde(default)]
+    color_font: Option<ColorDefinition>,
     #[serde(deserialize_with = "crate::language_font::unique_map")]
     entries: BTreeMap<String, String>,
     #[serde(default)]
@@ -192,6 +226,7 @@ struct Pack {
     fallback: String,
     entries: BTreeMap<String, String>,
     font: Font,
+    color_font: ColorFont,
 }
 fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
@@ -202,12 +237,15 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
             return Err("Unsupported language pack version".into());
         }
         let _provenance = (&pack.source_rom_sha256, &pack.source_slot);
+        let font = Font::compile(&pack.alphabet, pack.font)?;
+        let color_font = ColorFont::compile(&pack.alphabet, &font, pack.color_font)?;
         Ok(Pack {
             language: pack.language,
             name: pack.name,
             fallback: pack.fallback,
             entries: pack.entries,
-            font: Font::compile(&pack.alphabet, pack.font)?,
+            font,
+            color_font,
         })
     } else {
         let pack: LegacyPack = serde_json::from_slice(bytes)?;
@@ -218,12 +256,15 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
             return Err("Unsupported legacy language pack".into());
         }
         let _provenance = (&pack.source_rom_sha256, &pack.source_slot);
+        let font = legacy_font()?;
+        let color_font = ColorFont::generated(&font);
         Ok(Pack {
             language: pack.language,
             name: pack.name,
             fallback: pack.fallback,
             entries: pack.entries,
-            font: legacy_font()?,
+            font,
+            color_font,
         })
     }
 }
@@ -253,11 +294,36 @@ fn tables(rom: &[u8]) -> BTreeMap<String, usize> {
     result
 }
 
+const UI_BANK: usize = 0xec4324;
+const UI_COUNT: usize = 618;
+fn entries(rom: &[u8]) -> BTreeMap<String, Vec<usize>> {
+    let mut result: BTreeMap<_, _> = tables(rom)
+        .into_iter()
+        .map(|(id, offset)| (id, (0..5).map(|slot| offset + slot * 8 + 4).collect()))
+        .collect();
+    if rom.len() >= UI_BANK + UI_COUNT * 5 * 4 {
+        for index in 0..UI_COUNT {
+            let pointers: Vec<_> = (0..5)
+                .map(|slot| UI_BANK + (slot * UI_COUNT + index) * 4)
+                .collect();
+            if pointers
+                .iter()
+                .all(|&p| string(rom, word(rom, p)).is_some())
+            {
+                result.insert(format!("ui.{index:04x}"), pointers);
+            }
+        }
+    }
+    result
+}
+
 fn controls(text: &[u8]) -> Vec<Vec<u8>> {
     let mut result = Vec::new();
     let mut i = 0;
     while i + 1 < text.len() {
-        if matches!(text[i], b'@' | b'%') && text[i + 1].is_ascii_digit() {
+        if matches!(text[i], b'@' | b'%')
+            && (text[i + 1].is_ascii_digit() || text[i] == b'%' && text[i + 1].is_ascii_uppercase())
+        {
             let start = i;
             i += 2;
             if text[start] == b'%' {
@@ -288,7 +354,7 @@ fn encode(text: &str, font: &Font) -> Result<(Vec<u8>, bool), String> {
             continue;
         }
         let code = match character {
-            '\n' => 10,
+            '\n' | '\r' => 10,
             '’' | '‘' => b'\'',
             '“' | '”' => b'"',
             '—' | '–' => b'-',
@@ -329,6 +395,7 @@ pub struct Language {
     pub extended: bool,
     pub glyph_calls: u64,
     pub font: Font,
+    color_font: ColorFont,
     rom: Vec<u8>,
 }
 impl Language {
@@ -339,6 +406,9 @@ impl Language {
         Self::from_bytes(fs::read(path)?, rom)
     }
     fn from_bytes(bytes: Vec<u8>, rom: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        if bytes.len() as u64 > MAX_FILE {
+            return Err("Language pack exceeds 4 MiB".into());
+        }
         if format!("{:x}", Sha256::digest(rom)) != USA {
             return Err("Language packs require the verified USA ROM".into());
         }
@@ -357,8 +427,8 @@ impl Language {
         {
             return Err("Invalid language tag or name".into());
         }
-        let tables = tables(rom);
-        if tables.len() != 1156 {
+        let tables = entries(rom);
+        if tables.len() != 1156 + UI_COUNT {
             return Err("USA language table structure differs".into());
         }
         for id in pack.entries.keys() {
@@ -371,13 +441,32 @@ impl Language {
         let mut image = rom.to_vec();
         let mut translated = 0;
         let mut extended = false;
-        for (id, offset) in &tables {
-            let english = word(rom, offset + 4);
+        for (id, pointers) in &tables {
+            let english = word(rom, pointers[0]);
             let mut pointer = english;
             if let Some(text) = pack.entries.get(id).filter(|t| !t.is_empty()) {
+                let original = string(rom, english).unwrap();
+                let native_pointer = if text.chars().any(|c| pack.font.encode(c).is_some()) {
+                    None
+                } else {
+                    pointers.iter().map(|&p| word(rom, p)).find(|&p| {
+                        string(rom, p)
+                            .unwrap()
+                            .iter()
+                            .map(|&b| char::from(b))
+                            .eq(text.chars())
+                    })
+                };
+                if let Some(native) = native_pointer {
+                    pointer = native;
+                    translated += 1;
+                    for &literal in pointers {
+                        set_word(&mut image, literal, pointer);
+                    }
+                    continue;
+                }
                 let (encoded, needs_font) =
                     encode(text, &pack.font).map_err(|error| format!("{id}: {error}"))?;
-                let original = string(rom, english).unwrap();
                 if controls(&encoded) != controls(original) {
                     return Err(format!("{id}: preserve dynamic @ and % tokens").into());
                 }
@@ -391,12 +480,12 @@ impl Language {
             }
             // A host language is independent of the cartridge's language menu.
             // All guest slots resolve to the chosen text or English fallback.
-            for language in 0..5 {
-                set_word(&mut image, offset + language * 8 + 4, pointer);
+            for &literal in pointers {
+                set_word(&mut image, literal, pointer);
             }
         }
         if extended {
-            install_fonts(&mut image, &pack.font);
+            install_fonts(&mut image, &pack.font, &pack.color_font);
         }
         if image.len() > 32 * 1024 * 1024 {
             return Err("Text arena exceeds cartridge address space".into());
@@ -408,6 +497,7 @@ impl Language {
             extended,
             glyph_calls: 0,
             font: pack.font,
+            color_font: pack.color_font,
             rom: image,
         })
     }
@@ -443,10 +533,181 @@ impl Language {
     }
 }
 
+/// Swap only cartridge text data. CPU, devices, timers, audio and game progress
+/// stay live in memory; no serialized state or temporary save files are needed.
+pub fn change_live(
+    m: &mut Machine,
+    base: &[u8],
+    current: &mut Option<Language>,
+    bytes: Option<Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let original = bytes.is_none();
+    let mut next = Language::from_bytes(
+        bytes.unwrap_or_else(|| {
+            br#"{"version":2,"language":"en","name":"Original game","entries":{}}"#.to_vec()
+        }),
+        base,
+    )?;
+    // Retain the outgoing glyphs when returning to Latin-only text: already
+    // composed messages can finish displaying until the game redraws them.
+    if !next.extended {
+        if let Some(old) = current.as_ref().filter(|old| old.extended) {
+            next.font = old.font.clone();
+            next.color_font = old.color_font.clone();
+            next.extended = true;
+            install_fonts(&mut next.rom, &next.font, &next.color_font);
+        }
+    }
+    if original {
+        // Restore the cartridge's own language selection for future lookups.
+        for pointers in entries(base).values() {
+            for &p in pointers {
+                set_word(&mut next.rom, p, word(base, p));
+            }
+        }
+        next.label = "Original game / ROM".into();
+    }
+    // Keep previous arenas alive: an in-flight script may still own a string
+    // pointer outside UI state. Reuse identical arenas on subsequent switches
+    // instead of growing memory each time a language is toggled.
+    let cartridge_len = base.len();
+    let tail = &next.rom[cartridge_len..];
+    let cached = if tail.is_empty() {
+        Some(cartridge_len)
+    } else {
+        (cartridge_len..=m.bus.rom.len().saturating_sub(tail.len()))
+            .step_by(4)
+            .find(|&start| m.bus.rom.get(start..start + tail.len()) == Some(tail))
+    };
+    let mut image = m.bus.rom.clone();
+    image[..cartridge_len].copy_from_slice(&next.rom[..cartridge_len]);
+    let arena = if let Some(start) = cached {
+        start
+    } else {
+        while image.len() % 4 != 0 {
+            image.push(0);
+        }
+        let start = image.len();
+        if start + tail.len() > 32 * 1024 * 1024 {
+            return Err("Language arenas exceed 32 MiB; current language retained".into());
+        }
+        image.extend_from_slice(tail);
+        start
+    };
+    let delta = (arena - cartridge_len) as u32;
+    for literal in entries(base)
+        .into_values()
+        .flatten()
+        .chain([
+            0x2add8, 0x4b74, 0x4f3c, 0x601c, 0x2e520, 0x2e4f0, 0x642cc, 0x642d0,
+        ])
+        .chain(COLOR_LITERALS)
+        .chain(COLOR_WIDTH_LITERALS)
+    {
+        let pointer = word(&image, literal);
+        if pointer >= 0x08000000 + cartridge_len as u32 {
+            set_word(&mut image, literal, pointer + delta);
+        }
+    }
+    next.rom = image;
+    let mut ranges = BTreeMap::new();
+    let guest_slot = word(&m.bus.ewram, 0x35cc0).min(4) as usize;
+    for pointers in entries(base).values() {
+        for (slot, &p) in pointers.iter().enumerate() {
+            let old = word(&m.bus.rom, p);
+            let new = word(
+                &next.rom,
+                pointers[if original { guest_slot } else { slot }],
+            );
+            if old != new {
+                if let Some(text) = string(&m.bus.rom, old) {
+                    let length = string(&next.rom, new).unwrap().len();
+                    ranges
+                        .entry(old)
+                        .or_insert((new, text.len() as u32, length as u32));
+                }
+            }
+        }
+    }
+    for (literal, length) in [
+        (0x2add8, 88 * 32),
+        (0x4b74, 88 * 32),
+        (0x2e520, 88 * 32),
+        (0x2e4f0, 88 * 32),
+        (0x642cc, 224 * 64),
+        (0x642d0, 224),
+        (0x1770, 224 * 256),
+        (0x1774, 224),
+    ] {
+        let old = word(&m.bus.rom, literal);
+        let new = word(&next.rom, literal);
+        if old != new {
+            let extra = if length == 88 * 32 {
+                current.as_ref().map_or(0, |l| l.font.len() * 32)
+            } else {
+                0
+            };
+            ranges.insert(old, (new, (length + extra) as u32, (length + extra) as u32));
+        }
+    }
+    let relocate = |value: u32| {
+        if let Some((&start, &(target, length, next_length))) = ranges.range(..=value).next_back() {
+            let offset = value - start;
+            if offset <= length {
+                return target + offset.min(next_length);
+            }
+        }
+        value
+    };
+    // Only text/UI state and CPU stacks contain these references. Never scan
+    // world/entity memory: fixed-point coordinates can look like ROM pointers.
+    for (internal, start, end) in [
+        (false, 0x26000, 0x27280),
+        (false, 0x35b00, 0x36340),
+        (true, 0x7b00, 0x8000),
+    ] {
+        let memory = if internal {
+            &mut m.bus.iwram
+        } else {
+            &mut m.bus.ewram
+        };
+        for chunk in memory[start..end].chunks_exact_mut(4) {
+            let value = u32::from_le_bytes(chunk.try_into().unwrap());
+            chunk.copy_from_slice(&relocate(value).to_le_bytes());
+        }
+    }
+    for reg in &mut m.cpu.regs[..13] {
+        *reg = relocate(*reg);
+    }
+    // The next native draw repopulates its glyph cache with the selected font.
+    set_word(&mut m.bus.ewram, 0x142c, 0);
+    next.install(m);
+    *current = Some(next);
+    Ok(())
+}
+
+pub fn changes(path: &Path) -> Result<Vec<(u64, Option<Vec<u8>>)>, Box<dyn std::error::Error>> {
+    let mut result = Vec::new();
+    for line in fs::read_to_string(path)?.lines() {
+        if let Some(line) = line.strip_prefix("# language ") {
+            let (frame, json) = line
+                .split_once(' ')
+                .ok_or("Invalid recorded language change")?;
+            let frame = frame.parse()?;
+            if result.last().is_some_and(|(last, _)| *last > frame) {
+                return Err("Invalid language event order".into());
+            }
+            let pack: Option<String> = serde_json::from_str(json)?;
+            result.push((frame, pack.map(String::into_bytes)));
+        }
+    }
+    Ok(result)
+}
+
 // Preserve 88 tiles per font view, including adjacent reserved/icon tiles,
 // and append package-owned tiles. The dialogue font has its own
 // colour-remapping path, separate from the antialiased and plain UI fonts.
-fn install_fonts(rom: &mut Vec<u8>, custom: &Font) {
+fn install_fonts(rom: &mut Vec<u8>, custom: &Font, color: &ColorFont) {
     while rom.len() % 4 != 0 {
         rom.push(0);
     }
@@ -469,6 +730,40 @@ fn install_fonts(rom: &mut Vec<u8>, custom: &Font) {
         }
     }
     install_cutscene_font(rom, custom);
+    install_color_font(rom, custom, color);
+}
+
+const COLOR_LITERALS: [usize; 11] = [
+    0x1770, 0x1ad0, 0x1ec0, 0x206c, 0x20c8, 0x2230, 0x3dfc, 0x3e5c, 0x5c9c, 0x5dbc, 0x62df0,
+];
+const COLOR_WIDTH_LITERALS: [usize; 11] = [
+    0x1774, 0x1ad4, 0x1ec4, 0x2070, 0x20cc, 0x2234, 0x3e00, 0x3e60, 0x5ca0, 0x5dc0, 0x62df4,
+];
+fn install_color_font(rom: &mut Vec<u8>, custom: &Font, color: &ColorFont) {
+    const SOURCE: usize = 0x8314d0;
+    const WIDTHS: usize = 0x83f4d0;
+    let mut atlas = rom[SOURCE..SOURCE + 224 * 256].to_vec();
+    let mut widths = rom[WIDTHS..WIDTHS + 224].to_vec();
+    for (index, byte) in crate::language_font::private_codes()
+        .into_iter()
+        .take(custom.len())
+        .enumerate()
+    {
+        let slot = byte as usize - 32;
+        atlas[slot * 256..(slot + 1) * 256].copy_from_slice(&color.tiles[index]);
+        widths[slot] = color.widths[index];
+    }
+    let address = 0x08000000 + rom.len() as u32;
+    rom.extend_from_slice(&atlas);
+    rom.extend_from_slice(&widths);
+    for literal in COLOR_LITERALS {
+        assert_eq!(word(rom, literal), 0x08000000 + SOURCE as u32);
+        set_word(rom, literal, address);
+    }
+    for literal in COLOR_WIDTH_LITERALS {
+        assert_eq!(word(rom, literal), 0x08000000 + WIDTHS as u32);
+        set_word(rom, literal, address + atlas.len() as u32);
+    }
 }
 
 // Cut-scenes use an independent byte-per-pixel atlas and proportional widths,
@@ -505,7 +800,7 @@ fn install_cutscene_font(rom: &mut Vec<u8>, custom: &Font) {
 struct Trace {
     output: BufWriter<fs::File>,
     glyphs: BufWriter<fs::File>,
-    pointers: BTreeMap<u32, (usize, usize)>,
+    pointers: BTreeMap<u32, (String, usize)>,
     last: BTreeMap<u32, u64>,
     error: Option<io::Error>,
 }
@@ -519,9 +814,9 @@ pub fn open_trace(path: &Path, rom: &[u8]) -> Result<(), Box<dyn std::error::Err
     let mut glyphs = BufWriter::new(fs::File::create_new(path.with_extension("glyphs.csv"))?);
     writeln!(glyphs, "frame,pc,r0,r1,r2,r4,lr")?;
     let mut pointers = BTreeMap::new();
-    for &offset in tables(rom).values() {
-        for slot in 0..5 {
-            pointers.insert(0x08000000 + (offset + slot * 8 + 4) as u32, (offset, slot));
+    for (id, literals) in entries(rom) {
+        for (slot, literal) in literals.into_iter().enumerate() {
+            pointers.insert(0x08000000 + literal as u32, (id.clone(), slot));
         }
     }
     TRACE.with(|t| {
@@ -544,7 +839,7 @@ pub extern "C" fn read32(m: *mut c_void, address: u32) -> u32 {
             let Some(trace) = trace.as_mut() else {
                 return;
             };
-            let Some(&(offset, slot)) = trace.pointers.get(&normalized) else {
+            let Some((id, slot)) = trace.pointers.get(&normalized).cloned() else {
                 return;
             };
             let machine = unsafe { &*(m as *const Machine) };
@@ -552,7 +847,7 @@ pub extern "C" fn read32(m: *mut c_void, address: u32) -> u32 {
             if trace.last.insert(normalized, frame) != Some(frame) && trace.error.is_none() {
                 if let Err(error) = writeln!(
                     trace.output,
-                    "{frame},{:08x},text.{offset:08x},{slot},{value:08x}",
+                    "{frame},{:08x},{id},{slot},{value:08x}",
                     machine.cpu.regs[15]
                 ) {
                     trace.error = Some(error);
@@ -584,6 +879,64 @@ mod tests {
     use super::*;
     #[test]
     #[ignore = "requires the user's USA ROM"]
+    fn live_change_keeps_game_state_and_reuses_memory_arenas() {
+        let rom = fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").unwrap()).unwrap();
+        let mut machine = Machine::new(rom.clone());
+        let original = word(&rom, 0xcc7f0c + 4);
+        machine.bus.frames = 420;
+        machine.bus.clock = 1234567;
+        machine.bus.audio_buf = vec![17, -19];
+        set_word(&mut machine.bus.ewram, 0x1000, original); // world data is not a text reference
+        set_word(&mut machine.bus.ewram, 0x2693c, original);
+        let cpu = machine.cpu.clone();
+        let pack=serde_json::json!({"version":2,"language":"el","name":"Greek","alphabet":"Ω","font":{"width":3,"height":3,"glyphs":{"Ω":["###","#.#","###"]}},"entries":{"text.00cc7f0c":"Ω Ω", "ui.015b":"Ω"}}).to_string().into_bytes();
+        let mut current = None;
+        change_live(&mut machine, &rom, &mut current, Some(pack.clone())).unwrap();
+        let first_len = machine.bus.rom.len();
+        let pointer = word(&machine.bus.ewram, 0x2693c);
+        assert_eq!(
+            string(&machine.bus.rom, pointer),
+            Some(&[0x80, b' ', 0x80][..])
+        );
+        assert_eq!(
+            string(
+                &machine.bus.rom,
+                word(&machine.bus.rom, UI_BANK + 0x15b * 4)
+            ),
+            Some(&[0x80][..])
+        );
+        assert_eq!(word(&machine.bus.ewram, 0x1000), original);
+        assert_eq!(machine.cpu.regs, cpu.regs);
+        assert_eq!(machine.cpu.cpsr, cpu.cpsr);
+        assert_eq!(machine.bus.frames, 420);
+        assert_eq!(machine.bus.clock, 1234567);
+        assert_eq!(machine.bus.audio_buf, vec![17, -19]);
+        change_live(&mut machine, &rom, &mut current, None).unwrap();
+        assert_eq!(word(&machine.bus.ewram, 0x2693c), original);
+        assert_eq!(
+            word(&machine.bus.rom, UI_BANK + 0x15b * 4),
+            word(&rom, UI_BANK + 0x15b * 4)
+        );
+        let reset_len = machine.bus.rom.len();
+        assert!(reset_len >= first_len);
+        for _ in 0..4 {
+            change_live(&mut machine, &rom, &mut current, Some(pack.clone())).unwrap();
+            change_live(&mut machine, &rom, &mut current, None).unwrap();
+        }
+        assert_eq!(machine.bus.rom.len(), reset_len);
+        let previous = machine.bus.rom.clone();
+        assert!(change_live(
+            &mut machine,
+            &rom,
+            &mut current,
+            Some(b"invalid JSON".to_vec())
+        )
+        .is_err());
+        assert_eq!(machine.bus.rom, previous);
+        assert_eq!(machine.bus.frames, 420);
+    }
+    #[test]
+    #[ignore = "requires the user's USA ROM"]
     fn cutscene_atlas_preserves_original_text_and_covers_all_transport_slots() {
         let rom =
             fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").expect("GTA_LANGUAGE_TEST_ROM"))
@@ -600,18 +953,33 @@ mod tests {
                 .unwrap();
         let font = Font::compile(&alphabet, Some(definition)).unwrap();
         let mut image = rom.clone();
-        install_fonts(&mut image, &font);
+        install_fonts(&mut image, &font, &ColorFont::generated(&font));
         let atlas = (word(&image, 0x642cc) - 0x08000000) as usize;
         let widths = (word(&image, 0x642d0) - 0x08000000) as usize;
+        let color_atlas = (word(&image, 0x1770) - 0x08000000) as usize;
+        let color_widths = (word(&image, 0x1774) - 0x08000000) as usize;
+        assert!(COLOR_LITERALS
+            .iter()
+            .all(|&literal| word(&image, literal) == word(&image, 0x1770)));
+        assert!(COLOR_WIDTH_LITERALS
+            .iter()
+            .all(|&literal| word(&image, literal) == word(&image, 0x1774)));
         for byte in 32..=255u8 {
             let slot = byte as usize - 32;
             if font.index(byte as u32).is_none() {
+                assert_eq!(
+                    &image[color_atlas + slot * 256..color_atlas + (slot + 1) * 256],
+                    &rom[0x8314d0 + slot * 256..0x8314d0 + (slot + 1) * 256]
+                );
+                assert_eq!(image[color_widths + slot], rom[0x83f4d0 + slot]);
                 assert_eq!(
                     &image[atlas + slot * 64..atlas + (slot + 1) * 64],
                     &rom[0x84da90 + slot * 64..0x84da90 + (slot + 1) * 64]
                 );
                 assert_eq!(image[widths + slot], rom[0x851310 + slot]);
             } else {
+                assert_eq!(image[color_atlas + slot * 256 + ColorFont::offset(1, 3)], 1);
+                assert_eq!(image[color_widths + slot] + 2, 10);
                 // The native uppercase routine must leave every private byte intact.
                 assert_eq!(rom[0xbd3165 + byte as usize] & 2, 0);
                 assert_eq!(image[widths + slot], 3);
@@ -641,7 +1009,7 @@ mod tests {
         let path = ensure_english(&directory, &rom).unwrap().unwrap();
         let bytes = fs::read(&path).unwrap();
         let pack = parse_pack(&bytes).unwrap();
-        assert_eq!(pack.entries.len(), 1156);
+        assert_eq!(pack.entries.len(), 1774);
         assert_eq!(pack.language, "en");
         for (id, offset) in tables(&rom) {
             let original: String = string(&rom, word(&rom, offset + 4))
@@ -657,6 +1025,17 @@ mod tests {
         assert_eq!(discover(&directory, &rom).len(), 1);
         assert!(ensure_english(&directory, &rom).unwrap().is_none());
         assert_eq!(fs::read(&path).unwrap(), bytes);
+        let mut partial: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        partial["entries"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ui.015b");
+        partial["entries"]["text.00cabfac"] = "CUSTOM FAILURE".into();
+        fs::write(&path, serde_json::to_vec(&partial).unwrap()).unwrap();
+        assert!(ensure_english(&directory, &rom).unwrap().is_some());
+        let restored = parse_pack(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(restored.entries["ui.015b"], "RAMPAGE FAILED.");
+        assert_eq!(restored.entries["text.00cabfac"], "CUSTOM FAILURE");
         fs::write(&path, b"unfinished translator edits").unwrap();
         assert!(ensure_english(&directory, &rom).unwrap().is_none());
         assert_eq!(fs::read(&path).unwrap(), b"unfinished translator edits");
@@ -737,6 +1116,7 @@ mod tests {
             extended: true,
             glyph_calls: 0,
             font: test_font(),
+            color_font: ColorFont::generated(&test_font()),
             rom: vec![],
         };
         m.cpu.regs[0] = u32::MAX;

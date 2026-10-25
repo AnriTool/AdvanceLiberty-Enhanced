@@ -74,6 +74,18 @@ impl Session {
         }
         Ok(())
     }
+    pub fn language_change(&mut self, frame: u64, pack: Option<&[u8]>) -> io::Result<()> {
+        let pack = pack
+            .map(|bytes| std::str::from_utf8(bytes))
+            .transpose()
+            .map_err(io::Error::other)?;
+        writeln!(
+            self.input,
+            "# language {frame} {}",
+            serde_json::to_string(&pack)?
+        )?;
+        self.input.flush()
+    }
     pub fn aim(&mut self, frame: u64, angle: Option<u16>) -> io::Result<()> {
         if self.aim.is_none() && angle.is_some() {
             let mut aim = BufWriter::new(File::create_new(self.directory.join("aim.gba-aim"))?);
@@ -176,5 +188,16 @@ mod tests {
         assert!(fs::read_to_string(directory.join("summary.txt"))
             .unwrap()
             .contains("interpreted_steps=2"));
+        let text = "{\"name\":\"Русский\",\"entries\":{\"x\":\"line\\nnext\"}}".as_bytes();
+        session.language_change(10, Some(text)).unwrap();
+        session.language_change(20, None).unwrap();
+        assert_eq!(
+            crate::input(directory.join("input.gba-input").to_str().unwrap()).unwrap(),
+            vec![(0, 0x3ff), (2, 0x3fe)]
+        );
+        assert_eq!(
+            crate::localization::changes(&directory.join("input.gba-input")).unwrap(),
+            vec![(10, Some(text.to_vec())), (20, None)]
+        );
     }
 }

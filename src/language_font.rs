@@ -1,4 +1,4 @@
-//! Package-owned alphabets and monochrome glyphs for the original 8x8 cells.
+//! Package-owned alphabets, monochrome glyphs and indexed-color menu glyphs.
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -40,6 +40,157 @@ pub struct Definition {
     pub glyphs: BTreeMap<String, Vec<String>>,
     #[serde(default, deserialize_with = "unique_map")]
     pub aliases: BTreeMap<String, String>,
+}
+
+fn identity_palette() -> Vec<u8> {
+    (0..16).collect()
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColorDefinition {
+    pub width: u8,
+    pub height: u8,
+    #[serde(default = "identity_palette")]
+    pub palette: Vec<u8>,
+    #[serde(default)]
+    pub advance: Option<u8>,
+    #[serde(default, deserialize_with = "unique_map")]
+    pub advances: BTreeMap<String, u8>,
+    #[serde(deserialize_with = "unique_map")]
+    pub glyphs: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColorFont {
+    pub tiles: Vec<[u8; 256]>,
+    pub widths: Vec<u8>,
+}
+impl ColorFont {
+    pub fn compile(
+        alphabet: &str,
+        mono: &Font,
+        definition: Option<ColorDefinition>,
+    ) -> Result<Self, String> {
+        let Some(definition) = definition else {
+            return Ok(Self::generated(mono));
+        };
+        let width = definition.width as usize;
+        let height = definition.height as usize;
+        if !(1..=16).contains(&width) || !(1..=16).contains(&height) {
+            return Err("Color font must fit a 16x16 cell".into());
+        }
+        if definition.palette.len() != 16
+            || definition.palette[0] != 0
+            || definition.palette.iter().any(|&p| p > 15)
+        {
+            return Err("Color font palette requires 16 native shade indices (0..15), with transparent index 0".into());
+        }
+        let advance = definition.advance.unwrap_or((definition.width + 3) & !1);
+        if !(2..=18).contains(&advance)
+            || advance % 2 != 0
+            || definition
+                .advances
+                .values()
+                .any(|&v| !(2..=18).contains(&v) || v % 2 != 0)
+        {
+            return Err("Color font advances must be even pixel counts from 2 to 18".into());
+        }
+        if definition.glyphs.len() != mono.len()
+            || definition
+                .advances
+                .keys()
+                .any(|c| !definition.glyphs.contains_key(c))
+        {
+            return Err("Color font glyphs must match alphabet exactly".into());
+        }
+        let mut result = Self::default();
+        for c in alphabet.chars() {
+            let key = c.to_string();
+            let rows = definition
+                .glyphs
+                .get(&key)
+                .ok_or_else(|| format!("Missing color glyph: {c}"))?;
+            if rows.len() != height {
+                return Err(format!("Color glyph {c}: expected {height} rows"));
+            }
+            let mut tile = [0u8; 256];
+            for (y, row) in rows.iter().enumerate() {
+                if row.len() != width || !row.bytes().all(|b| b == b'.' || b.is_ascii_hexdigit()) {
+                    return Err(format!(
+                        "Color glyph {c}: expected {width} hex pixels or '.'"
+                    ));
+                }
+                for (x, byte) in row.bytes().enumerate() {
+                    let shade = if byte == b'.' {
+                        0
+                    } else {
+                        (byte as char).to_digit(16).unwrap() as usize
+                    };
+                    tile[Self::offset(x, y)] = definition.palette[shade];
+                }
+            }
+            result.tiles.push(tile);
+            result
+                .widths
+                .push(*definition.advances.get(&key).unwrap_or(&advance) - 2);
+        }
+        Ok(result)
+    }
+    pub fn offset(x: usize, y: usize) -> usize {
+        (y / 8 * 2 + x / 8) * 64 + (y % 8) * 8 + x % 8
+    }
+    /// Compatibility fallback for packs authored before color_font existed.
+    /// It scales the package's own shapes; no alphabet is built into Rust.
+    pub fn generated(mono: &Font) -> Self {
+        let mut result = Self::default();
+        for index in 0..mono.len() {
+            let mut fill = [[false; 16]; 16];
+            for y in 0..12 {
+                for x in 0..8 {
+                    let sx = x * mono.width / 8;
+                    let sy = y * mono.height / 12;
+                    fill[y + 3][x + 1] = mono.rows[index][sy] & (1 << (mono.width - 1 - sx)) != 0;
+                }
+            }
+            let mut pixels = [[0u8; 16]; 16];
+            for y in 0..16 {
+                for x in 0..16 {
+                    if fill[y][x] {
+                        for dy in -1i32..=1 {
+                            for dx in -1i32..=1 {
+                                let nx = x as i32 + dx;
+                                let ny = y as i32 + dy;
+                                if (0..16).contains(&nx) && (0..16).contains(&ny) {
+                                    pixels[ny as usize][nx as usize] = 8;
+                                }
+                            }
+                        }
+                        if y < 15 && x < 15 {
+                            pixels[y + 1][x + 1] = 9;
+                        }
+                    }
+                }
+            }
+            let mut tile = [0u8; 256];
+            for y in 0..16 {
+                for x in 0..16 {
+                    if fill[y][x] {
+                        pixels[y][x] = if y < 7 {
+                            1
+                        } else if y < 11 {
+                            2
+                        } else {
+                            3
+                        };
+                    }
+                    tile[Self::offset(x, y)] = pixels[y][x];
+                }
+            }
+            result.tiles.push(tile);
+            result.widths.push(8);
+        }
+        result
+    }
 }
 
 // These are transport slots in the GBA parser, not a language alphabet.
@@ -233,6 +384,38 @@ impl Font {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_color_pixels_palette_and_spacing_come_from_data() {
+        let mono = Font::compile("Ω", Some(definition())).unwrap();
+        let mut rows = vec!["................".to_string(); 16];
+        rows[9] = ".........a......".into();
+        let mut palette: Vec<u8> = (0..16).collect();
+        palette[10] = 14;
+        let value = serde_json::json!({"width":16,"height":16,"advance":6,"palette":palette,"glyphs":{"Ω":rows}});
+        let definition: ColorDefinition = serde_json::from_value(value.clone()).unwrap();
+        let font = ColorFont::compile("Ω", &mono, Some(definition)).unwrap();
+        assert_eq!(font.tiles[0][ColorFont::offset(9, 9)], 14);
+        assert_eq!(font.tiles[0].iter().filter(|&&p| p != 0).count(), 1);
+        assert_eq!(font.widths[0] + 2, 6);
+        for (key, bad) in [
+            ("width", serde_json::json!(17)),
+            ("advance", serde_json::json!(7)),
+            ("palette", serde_json::json!([0, 1])),
+        ] {
+            let mut invalid = value.clone();
+            invalid[key] = bad;
+            assert!(
+                ColorFont::compile("Ω", &mono, Some(serde_json::from_value(invalid).unwrap()))
+                    .is_err()
+            );
+        }
+        let mut bad = value;
+        bad["glyphs"]["Ω"][0] = "????????????????".into();
+        assert!(
+            ColorFont::compile("Ω", &mono, Some(serde_json::from_value(bad).unwrap())).is_err()
+        );
+        assert_eq!(ColorFont::generated(&mono).tiles.len(), 1);
+    }
     fn definition() -> Definition {
         serde_json::from_value(serde_json::json!({"width":3,"height":3,"glyphs":{"Ω":["###","#.#","#.#"]},"aliases":{"ω":"Ω"}})).unwrap()
     }

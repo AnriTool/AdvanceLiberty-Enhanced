@@ -82,6 +82,8 @@ pub struct Desktop {
     release_input: bool,
     preferences_path: std::path::PathBuf,
     language: Option<String>,
+    language_change: Option<Option<String>>,
+    language_scan: bool,
     languages: Vec<crate::localization::Choice>,
     next_frame: Instant,
     controls: crate::controls::Controls,
@@ -224,6 +226,8 @@ impl Desktop {
             preview_status: "",
             render_settings: preferences.render,
             language: preferences.language,
+            language_change: None,
+            language_scan: false,
             languages: Vec::new(),
             renderer_available: false,
             gamepad,
@@ -264,7 +268,21 @@ impl Desktop {
         {
             self.language = None;
         }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.refresh_languages(languages.clone());
+        }
         self.languages = languages;
+    }
+    pub fn take_language_scan(&mut self) -> bool {
+        std::mem::take(&mut self.language_scan)
+    }
+    pub fn take_language_change(&mut self) -> Option<Option<String>> {
+        self.language_change.take()
+    }
+    pub fn language_error(&mut self, previous: Option<String>, error: &str) {
+        self.language = previous;
+        self.notice = "Language could not be loaded; see console";
+        eprintln!("Language unchanged: {error}");
     }
     pub fn update_status(
         &mut self,
@@ -376,6 +394,7 @@ impl Desktop {
                     )
                     .with_languages(self.languages.clone()),
                 );
+                self.language_scan = true;
                 self.title_initialized = false;
                 continue;
             }
@@ -592,6 +611,9 @@ impl Desktop {
             }
         }
         self.controls = menu.controls.clone();
+        if self.language != menu.prefs.language || menu.language_requested {
+            self.language_change = Some(menu.prefs.language.clone());
+        }
         self.language = menu.prefs.language.clone();
         *settings = menu.prefs.render;
         self.render_settings = *settings;
@@ -776,6 +798,14 @@ mod tests {
             assert!(ui.menu.is_none());
             ui.poll(&mut settings, true, Context::OnFoot).unwrap();
             assert_eq!(ui.language.as_deref(), save.then_some("ru-demo.json"));
+            assert_eq!(
+                ui.take_language_change(),
+                if save {
+                    Some(Some("ru-demo.json".into()))
+                } else {
+                    None
+                }
+            );
             assert_eq!(
                 crate::controls::Controls::load(&path).unwrap().encode(),
                 crate::controls::Controls::parse(&original)

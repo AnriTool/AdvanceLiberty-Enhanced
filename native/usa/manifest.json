@@ -31,8 +31,8 @@
       "path": "native/usa/sessions.dll",
       "source": "native/usa/sessions.c",
       "coverage": "native/usa/coverage/sessions.csv",
-      "sha256": "12434d4a9777017c0a2fe274c759c6a3a3ed7a82ac5ff202f0137333e4e13023",
-      "variants": 37200
+      "sha256": "56a8b4d83026ca20ae6ca912cf416c83056c5804f02e3e943cd95a44e8f15ce7",
+      "variants": 39409
     }
   ]
 }
