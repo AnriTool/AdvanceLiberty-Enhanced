@@ -8,6 +8,8 @@ param(
     [string]$SessionDirectory,
     [switch]$OriginalRenderer,
     [switch]$OriginalMenus,
+    [switch]$PreserveCash,
+    [ValidateRange(0,300)][uint32]$DropLifetime = 0,
     [switch]$AffineTextures,
     [uint64]$Frames = 0
 )
@@ -24,6 +26,8 @@ foreach ($path in @($SavePath, $ControlsPath)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
 }
 $runtimeOptions = @('--camera-preview')
+if ($PreserveCash) { $runtimeOptions += '--preserve-cash' }
+if ($DropLifetime -gt 0) { $runtimeOptions += @('--drop-lifetime', "$DropLifetime") }
 if ($OriginalMenus) { $runtimeOptions += '--original-menus' }
 if ($LanguagePack) { $runtimeOptions += @('--language-pack', (Resolve-Path -LiteralPath $LanguagePack).Path) }
 if ($OriginalRenderer) { $runtimeOptions += '--original-renderer' }

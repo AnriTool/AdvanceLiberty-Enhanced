@@ -15,6 +15,7 @@ mod building_material;
 mod building_projection;
 mod camera_preview;
 mod camera_trace;
+mod cash_protection;
 mod color_effects;
 mod control_context;
 #[cfg(feature = "desktop")]
@@ -23,6 +24,7 @@ mod controls;
 mod coverage;
 #[cfg(feature = "desktop")]
 mod desktop;
+mod drop_lifetime;
 mod frame_capture;
 #[cfg(feature = "desktop")]
 mod game_menu;
@@ -39,6 +41,7 @@ mod native_host;
 mod object_projection;
 #[cfg(feature = "desktop")]
 mod options;
+mod pickup_probe;
 mod rect_windows;
 mod render_settings;
 mod save;
@@ -319,6 +322,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    let drop_lifetime_requested =
+        if let Some(index) = args.iter().position(|s| s == "--drop-lifetime") {
+            if index + 1 >= args.len() {
+                return Err("--drop-lifetime requires seconds (1..300)".into());
+            }
+            let value = args.remove(index + 1).parse::<u32>()?;
+            args.remove(index);
+            if !(1..=300).contains(&value) {
+                return Err("Drop lifetime must be 1..300 seconds".into());
+            }
+            Some(value)
+        } else {
+            None
+        };
+    // Research switch: replay an unchanged lead-in before enabling the policy.
+    let drop_start_requested =
+        if let Some(index) = args.iter().position(|s| s == "--drop-lifetime-after-frame") {
+            if index + 1 >= args.len() {
+                return Err("--drop-lifetime-after-frame requires FRAME".into());
+            }
+            let value = args.remove(index + 1).parse::<u64>()?;
+            args.remove(index);
+            Some(value)
+        } else {
+            None
+        };
+    let preserve_cash_requested =
+        if let Some(index) = args.iter().position(|s| s == "--preserve-cash") {
+            args.remove(index);
+            true
+        } else {
+            false
+        };
+    let mut cash_retained = 0u64;
+    let pickup_probe_path = if let Some(index) = args.iter().position(|s| s == "--pickup-probe") {
+        if index + 1 >= args.len() {
+            return Err("--pickup-probe requires NEW_DIRECTORY".into());
+        }
+        let path = std::path::PathBuf::from(args.remove(index + 1));
+        args.remove(index);
+        Some(path)
+    } else {
+        None
+    };
     let mut state_trace = if let Some(index) = args.iter().position(|s| s == "--state-trace") {
         use std::io::Write;
         if index + 1 >= args.len() {
@@ -530,6 +577,56 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if (force_interpreter || mode == "interp") && aim_keys.is_some() {
         return Err("Mouse aim replay requires native multi/single mode".into());
     }
+    let recorded_drop_seconds = if args[1] != "-" {
+        fs::read_to_string(std::path::Path::new(&args[1]).with_file_name("info.txt"))
+            .ok()
+            .and_then(|s| {
+                s.lines().find_map(|l| {
+                    l.strip_prefix("drop_lifetime_seconds=")
+                        .and_then(|n| n.parse::<u32>().ok())
+                })
+            })
+    } else {
+        None
+    };
+    let drop_seconds = drop_lifetime_requested.or(recorded_drop_seconds);
+    if drop_seconds.is_some_and(|s| !(1..=300).contains(&s)) {
+        return Err("Recorded drop lifetime must be 1..300 seconds".into());
+    }
+    let mut drop_policy = drop_seconds.map(drop_lifetime::Policy::new);
+    let drop_start = drop_start_requested
+        .or_else(|| {
+            if args[1] == "-" {
+                return None;
+            }
+            fs::read_to_string(std::path::Path::new(&args[1]).with_file_name("info.txt"))
+                .ok()
+                .and_then(|s| {
+                    s.lines().find_map(|l| {
+                        l.strip_prefix("drop_lifetime_after_frame=")
+                            .and_then(|n| n.parse::<u64>().ok())
+                    })
+                })
+        })
+        .unwrap_or(0);
+    if drop_start != 0 && drop_seconds.is_none() {
+        return Err("--drop-lifetime-after-frame requires --drop-lifetime".into());
+    }
+    let preserve_cash = drop_seconds.is_some()
+        || preserve_cash_requested
+        || args[1] != "-"
+            && fs::read_to_string(std::path::Path::new(&args[1]).with_file_name("info.txt"))
+                .is_ok_and(|text| text.lines().any(|line| line == "preserve_cash=1"));
+    if preserve_cash && (mode == "interp" || force_interpreter) {
+        return Err("--preserve-cash requires native dispatch mode".into());
+    }
+    if pickup_probe_path.is_some() && (mode == "interp" || force_interpreter) {
+        return Err("--pickup-probe requires native dispatch mode".into());
+    }
+    let mut pickup_probe = pickup_probe_path
+        .as_deref()
+        .map(pickup_probe::Probe::open)
+        .transpose()?;
     let rom = fs::read(&args[0])?;
     if rom.len() != 16 * 1024 * 1024 || &rom[0xac..0xb0] != b"BGTE" {
         return Err("Expected GTA Advance USA ROM".into());
@@ -698,6 +795,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let (Some(recording), Some(language)) = (recording.as_ref(), language.as_ref()) {
         recording.language_pack(&language.bytes)?;
     }
+    if preserve_cash {
+        if let Some(recording) = recording.as_ref() {
+            use std::io::Write;
+            let mut info = fs::OpenOptions::new()
+                .append(true)
+                .open(recording.directory().join("info.txt"))?;
+            writeln!(info, "preserve_cash=1")?;
+            if let Some(seconds) = drop_seconds {
+                writeln!(info, "drop_lifetime_seconds={seconds}")?;
+                writeln!(info, "drop_lifetime_after_frame={drop_start}")?;
+            }
+        }
+    }
     #[cfg(feature = "desktop")]
     let mut desktop = if mode == "play" {
         Some(desktop::Desktop::new(controls_path.unwrap_or(
@@ -765,6 +875,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     let start = std::time::Instant::now();
     while m.bus.frames < frames {
+        if let Some(policy) = drop_policy.as_mut().filter(|_| m.bus.frames >= drop_start) {
+            policy.update(&mut m);
+        }
         mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
         while language_changes
@@ -888,6 +1001,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 let key = m.cpu.regs[15] | m.cpu.thumb() as u32;
+                if let Some(policy) = drop_policy.as_mut() {
+                    if drop_lifetime::Policy::interested(key) && m.bus.frames >= drop_start {
+                        policy.observe(&mut m, key);
+                    }
+                }
+                if preserve_cash && key == cash_protection::CHECK && cash_protection::apply(&mut m)
+                {
+                    cash_retained += 1;
+                }
+                if let Some(probe) = pickup_probe.as_mut() {
+                    if pickup_probe::Probe::interested(key) {
+                        probe.observe(&m, key)?;
+                    }
+                }
                 #[cfg(feature = "desktop")]
                 if game_menu::Frontend::interested(key) {
                     if let Some(ui) = desktop.as_mut() {
@@ -954,6 +1081,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if m.bus.frames == before {
             return Err("No frame progress".into());
+        }
+        if let Some(probe) = pickup_probe.as_mut() {
+            probe.frame(&m)?;
         }
         if camera_enabled {
             camera_trace::frame(&m)?;
@@ -1078,6 +1208,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
         trace.flush()?;
     }
+    if let Some(probe) = pickup_probe.as_mut() {
+        probe.finish()?;
+    }
     if let Some(check) = block_check.as_mut() {
         check.finish()?;
     }
@@ -1126,6 +1259,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     localization::close_trace()?;
+    if preserve_cash {
+        println!("preserve_cash retained_checks={cash_retained}");
+    }
+    if let Some(policy) = drop_policy.as_ref() {
+        println!(
+            "drop_lifetime seconds={} held={} emergency_corpses={} expired={}",
+            drop_seconds.unwrap(),
+            policy.held,
+            policy.emergency_bodies,
+            policy.expired
+        );
+    }
     println!("mode={mode} frames={} hash={:016x} seconds={:.3} dispatch_miss_steps={misses} rejected_fallback_steps={rejected_fallback} selected={selected:?}",m.bus.frames,hash(&m.bus.framebuffer),start.elapsed().as_secs_f64());
     if mode == "interp" || force_interpreter {
         return Ok(());
