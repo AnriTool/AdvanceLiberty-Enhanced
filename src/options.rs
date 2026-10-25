@@ -150,6 +150,7 @@ pub enum Command {
     Save,
     Close,
     Quit,
+    SaveGameAndQuit,
 }
 pub struct Menu {
     pub controls: Controls,
@@ -167,6 +168,7 @@ pub struct Menu {
     exit_only: bool,
     cached: Option<sdl2::surface::Surface<'static>>,
     pub skin: Option<std::sync::Arc<crate::game_menu::Skin>>,
+    pub can_save_game: bool,
 }
 impl Menu {
     pub fn new(controls: Controls, prefs: Preferences) -> Self {
@@ -186,6 +188,7 @@ impl Menu {
             exit_only: false,
             cached: None,
             skin: None,
+            can_save_game: false,
         }
     }
     pub fn with_languages(mut self, languages: Vec<crate::localization::Choice>) -> Self {
@@ -195,7 +198,7 @@ impl Menu {
     pub fn request_quit(&mut self) {
         self.confirm_quit = true;
         self.exit_only = true;
-        self.row = 1;
+        self.row = self.count() - 1;
     }
     fn text<T: sdl2::render::RenderTarget>(
         &self,
@@ -248,7 +251,7 @@ impl Menu {
     }
     fn count(&self) -> usize {
         if self.confirm_quit {
-            2
+            2 + usize::from(self.can_save_game)
         } else if self.language_page {
             self.languages.len() + 2
         } else if self.graphics_page {
@@ -295,7 +298,9 @@ impl Menu {
     fn activate(&mut self) -> Command {
         self.message.clear();
         if self.confirm_quit {
-            return if self.row == 0 {
+            return if self.can_save_game && self.row == 0 {
+                Command::SaveGameAndQuit
+            } else if self.row == usize::from(self.can_save_game) {
                 Command::Quit
             } else {
                 self.back()
@@ -364,7 +369,7 @@ impl Menu {
             10 => return Command::Close,
             11 => {
                 self.confirm_quit = true;
-                self.row = 1;
+                self.row = self.count() - 1;
             }
             _ => {}
         }
@@ -531,12 +536,20 @@ impl Menu {
             canvas,
             38,
             36,
-            "ENHANCED OPTIONS",
+            if self.confirm_quit {
+                "EXIT APPLICATION"
+            } else {
+                "ENHANCED OPTIONS"
+            },
             Color::RGB(255, 213, 92),
             3,
         )?;
         let subtitle = if self.confirm_quit {
-            "Quit game? Unsaved options will be discarded."
+            if self.can_save_game {
+                "Save progress? Unsaved PC options are discarded."
+            } else {
+                "Quit game? Unsaved options will be discarded."
+            }
         } else if self.language_page {
             "LANGUAGE / APPLIES WHEN SAVED"
         } else if self.graphics_page {
@@ -553,10 +566,18 @@ impl Menu {
         };
         self.text(canvas, 38, 74, subtitle, Color::RGB(169, 192, 208), 2)?;
         let rows: Vec<(String, String)> = if self.confirm_quit {
-            vec![
-                ("Quit game".into(), String::new()),
-                ("Back".into(), String::new()),
-            ]
+            if self.can_save_game {
+                vec![
+                    ("Save game and exit".into(), String::new()),
+                    ("Exit without saving".into(), String::new()),
+                    ("Back".into(), String::new()),
+                ]
+            } else {
+                vec![
+                    ("Quit game".into(), String::new()),
+                    ("Back".into(), String::new()),
+                ]
+            }
         } else if self.language_page {
             let mut rows = vec![(
                 "Original game / ROM".into(),
@@ -709,7 +730,9 @@ impl Menu {
             )?;
         }
         let aim_row = self.section == Some(1) && self.row == Controls::actions(1).len();
-        let hint = if aim_row {
+        let hint = if self.confirm_quit {
+            "Arrows: select  Enter: confirm  Esc: back"
+        } else if aim_row {
             "Enter / left / right: toggle   Esc: back"
         } else if self.language_page {
             "Enter: select language   Esc: back"
@@ -873,6 +896,26 @@ fn text_with_font<T: sdl2::render::RenderTarget>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exit_dialog_offers_game_save_without_confusing_it_with_pc_preferences() {
+        let mut menu = super::Menu::new(
+            crate::controls::Controls::parse(&crate::controls::Controls::default_file()).unwrap(),
+            super::Preferences::default(),
+        );
+        menu.can_save_game = true;
+        menu.request_quit();
+        assert_eq!(menu.count(), 3);
+        assert_eq!(menu.row, 2);
+        assert!(matches!(menu.activate(), super::Command::Close));
+        menu.row = 0;
+        assert!(matches!(menu.activate(), super::Command::SaveGameAndQuit));
+        menu.row = 1;
+        assert!(matches!(menu.activate(), super::Command::Quit));
+        menu.can_save_game = false;
+        menu.request_quit();
+        assert_eq!(menu.count(), 2);
+        assert_eq!(menu.row, 1);
+    }
     use super::*;
     use sdl2::keyboard::{Mod, Scancode};
     fn key(k: Keycode) -> Event {

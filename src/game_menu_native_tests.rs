@@ -223,3 +223,83 @@ fn real_native_camera_roundtrip_resume_and_quit() {
             && crate::control_context::detect(&m.bus) == crate::control_context::Context::Menu
     });
 }
+
+#[test]
+#[ignore = "requires local USA ROM, AOT libraries and recorded boot"]
+fn real_native_save_and_exit_writes_and_reloads_progress() {
+    let mut engine = Engine::load();
+    let rom = std::fs::read("roms/usa.gba").unwrap();
+    let source = "artifacts/menu-play-25df02055b414a128fce7029ca9a58cb/session";
+    let initial = std::fs::read(format!("{source}/initial.sav")).unwrap();
+    let input = std::fs::read_to_string(format!("{source}/input.gba-input")).unwrap();
+    let keys: Vec<(u64, u16)> = input
+        .lines()
+        .filter_map(|line| {
+            let (a, b) = line.split_once(' ')?;
+            Some((a.parse().ok()?, u16::from_str_radix(b, 16).ok()?))
+        })
+        .collect();
+    let mut m = Machine::new(rom.clone());
+    let directory = std::env::temp_dir().join(format!(
+        "menu-save-exit-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("progress.sav");
+    std::fs::write(&path, &initial).unwrap();
+    let mut save = crate::save::Save::open(path.clone(), &mut m).unwrap();
+    let mut f = Frontend::default();
+    for frame in 0..850 {
+        let i = keys.partition_point(|(at, _)| *at <= frame);
+        engine.frame(&mut m, &mut f, if i == 0 { 0x3ff } else { keys[i - 1].1 });
+    }
+    engine.choose(&mut m, &mut f, 4, 0x0832bea0);
+    engine.choose(&mut m, &mut f, 3, ROOT);
+    assert_eq!(m.bus.ewram[0x10c66], 3);
+    // Also start from Options, so the automatic route must return to Pause.
+    engine.choose(&mut m, &mut f, 1, OPTIONS);
+    assert!(f.begin_save_exit());
+    engine.until(&mut m, &mut f, "save completed in ROM", |_, f| {
+        f.save_exit_needs_commit()
+    });
+    assert!(
+        !f.save_exit_complete(),
+        "ROM success alone must not close the app"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        initial,
+        "no disk commit before game success"
+    );
+    save.update(&m, true).unwrap();
+    f.finish_save_exit(Ok(()));
+    assert!(f.save_exit_complete());
+    let written = std::fs::read(&path).unwrap();
+    assert_eq!(written, m.bus.save_data().unwrap());
+    assert_ne!(written, initial);
+    assert_eq!(
+        std::fs::read(path.with_file_name("progress.sav.bak")).unwrap(),
+        initial
+    );
+    drop(save);
+    let mut loaded = Machine::new(rom);
+    let _save = crate::save::Save::open(path, &mut loaded).unwrap();
+    let mut next = Frontend::default();
+    for frame in 0..850 {
+        let i = keys.partition_point(|(at, _)| *at <= frame);
+        engine.frame(
+            &mut loaded,
+            &mut next,
+            if i == 0 { 0x3ff } else { keys[i - 1].1 },
+        );
+    }
+    assert_eq!(next.view.as_ref().unwrap().descriptor, ROOT);
+    assert_eq!(
+        loaded.bus.ewram[0x10c66], 3,
+        "saved camera setting must survive a full boot/load"
+    );
+}

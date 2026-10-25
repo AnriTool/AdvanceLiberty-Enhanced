@@ -994,8 +994,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })?;
             }
         }
-        if let Some(save) = save.as_mut() {
-            save.update(&m, false)?;
+        #[cfg(feature = "desktop")]
+        let defer_save_write = desktop.as_ref().is_some_and(|ui| ui.saving_game_for_exit());
+        #[cfg(not(feature = "desktop"))]
+        let defer_save_write = false;
+        if !defer_save_write {
+            if let Some(save) = save.as_mut() {
+                save.update(&m, false)?;
+            }
+        }
+        #[cfg(feature = "desktop")]
+        if let Some(ui) = desktop.as_mut() {
+            if ui.save_exit_needs_commit() {
+                let result = save
+                    .as_mut()
+                    .ok_or_else(|| "No save file is configured".to_owned())
+                    .and_then(|save| save.update(&m, true).map_err(|e| e.to_string()));
+                ui.finish_save_exit(result);
+            }
         }
         #[cfg(feature = "desktop")]
         let preview_image = camera_preview

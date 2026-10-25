@@ -184,6 +184,22 @@ pub struct Frontend {
     pulse: Option<(u16, u8)>,
     back: bool,
     quiet_pulse: bool,
+    save_exit: Option<SaveExit>,
+    save_exit_error: Option<String>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExitStage {
+    Root,
+    BackFrom(u32),
+    Confirm,
+    Save,
+    Writing,
+    Commit,
+    Complete,
+}
+struct SaveExit {
+    stage: ExitStage,
+    frames: u32,
 }
 pub enum Action {
     None,
@@ -201,9 +217,30 @@ impl Frontend {
                 | 0x08007a15
                 | 0x08007b9d
                 | 0x080013ad
+                | 0x08007ad1
+                | 0x08007a2d
+                | 0x08007aeb
         )
     }
     pub fn observe(&mut self, m: &Machine, key: u32) {
+        if matches!(key, 0x08007ad1 | 0x08007a2d | 0x08007aeb) {
+            if self.save_exit_active() {
+                match key {
+                    0x08007ad1 => self.save_exit.as_mut().unwrap().stage = ExitStage::Commit,
+                    0x08007a2d => {
+                        self.fail_save_exit("The game cannot save now. Exit cancelled.".into())
+                    }
+                    _ => self
+                        .fail_save_exit("The game reported a save error. Exit cancelled.".into()),
+                }
+            }
+            return;
+        }
+        if key == 0x08007a15 {
+            if let Some(exit) = self.save_exit.as_mut() {
+                exit.stage = ExitStage::Writing;
+            }
+        }
         if key != 0x080011ed {
             self.view = None;
             self.plan = None;
@@ -281,6 +318,101 @@ impl Frontend {
         self.back = false;
         self.quiet_pulse = false;
     }
+    pub fn can_save_exit(&self) -> bool {
+        self.view.is_some() && self.save_exit.is_none()
+    }
+    pub fn begin_save_exit(&mut self) -> bool {
+        if !self.can_save_exit() {
+            return false;
+        }
+        self.cancel_navigation();
+        self.save_exit_error = None;
+        self.save_exit = Some(SaveExit {
+            stage: ExitStage::Root,
+            frames: 0,
+        });
+        true
+    }
+    pub fn save_exit_active(&self) -> bool {
+        self.save_exit
+            .as_ref()
+            .is_some_and(|s| s.stage != ExitStage::Complete)
+    }
+    pub fn save_exit_needs_commit(&self) -> bool {
+        self.save_exit
+            .as_ref()
+            .is_some_and(|s| s.stage == ExitStage::Commit)
+    }
+    pub fn save_exit_complete(&self) -> bool {
+        self.save_exit
+            .as_ref()
+            .is_some_and(|s| s.stage == ExitStage::Complete)
+    }
+    pub fn finish_save_exit(&mut self, result: Result<(), String>) {
+        if !self.save_exit_needs_commit() {
+            return;
+        }
+        match result {
+            Ok(()) => self.save_exit.as_mut().unwrap().stage = ExitStage::Complete,
+            Err(error) => {
+                self.fail_save_exit(format!("Cannot write save: {error}. Exit cancelled."))
+            }
+        }
+    }
+    fn fail_save_exit(&mut self, error: String) {
+        self.save_exit = None;
+        self.cancel_navigation();
+        self.save_exit_error = Some(error);
+    }
+    pub fn take_save_exit_error(&mut self) -> Option<String> {
+        self.save_exit_error.take()
+    }
+    fn advance_save_exit(&mut self) {
+        let Some(exit) = self.save_exit.as_mut() else {
+            return;
+        };
+        if matches!(exit.stage, ExitStage::Commit | ExitStage::Complete) {
+            return;
+        }
+        exit.frames += 1;
+        if exit.frames > 1800 {
+            self.fail_save_exit("Save did not finish. Exit cancelled.".into());
+            return;
+        }
+        if self.busy() {
+            return;
+        }
+        let Some(v) = &self.view else {
+            return;
+        };
+        let stage = self.save_exit.as_ref().unwrap().stage;
+        let action = match stage {
+            ExitStage::Root if v.descriptor == ROOT => Some((5, ExitStage::Confirm)),
+            ExitStage::Root if v.descriptor == 0x0832db28 => Some((1, ExitStage::Save)),
+            ExitStage::Root => {
+                let descriptor = v.descriptor;
+                self.back = true;
+                self.save_exit.as_mut().unwrap().stage = ExitStage::BackFrom(descriptor);
+                None
+            }
+            ExitStage::BackFrom(old) if v.descriptor != old => {
+                self.save_exit.as_mut().unwrap().stage = ExitStage::Root;
+                None
+            }
+            ExitStage::Confirm if v.descriptor == 0x0832db28 => Some((1, ExitStage::Save)),
+            _ => None,
+        };
+        if let Some((row, next)) = action {
+            self.row = row;
+            self.plan = Some(Plan {
+                descriptor: v.descriptor,
+                row,
+                frames: 0,
+                confirm: true,
+            });
+            self.save_exit.as_mut().unwrap().stage = next;
+        }
+    }
     pub fn press(&mut self, mask: u16) {
         if !self.busy() {
             self.quiet_pulse = false;
@@ -291,6 +423,7 @@ impl Frontend {
         self.quiet_pulse
     }
     pub fn input(&mut self) -> u16 {
+        self.advance_save_exit();
         if let Some((bits, tick)) = self.pulse {
             self.pulse = if tick >= 11 {
                 None
@@ -344,6 +477,9 @@ impl Frontend {
         0x3ff
     }
     pub fn event(&mut self, e: &Event) -> Action {
+        if self.save_exit_active() {
+            return Action::None;
+        }
         let key = match *e {
             Event::KeyDown {
                 keycode: Some(k),
@@ -421,6 +557,13 @@ impl Frontend {
         Action::None
     }
     pub fn draw<T: RenderTarget>(&self, canvas: &mut Canvas<T>, skin: &Skin) -> Result<(), String> {
+        if self.save_exit_active() {
+            skin.background(canvas)?;
+            skin.text(canvas, 40, 32, b"EXIT APPLICATION", 2, 680)?;
+            skin.text(canvas, 40, 180, b"SAVING GAME...", 2, 680)?;
+            canvas.present();
+            return Ok(());
+        }
         let Some(v) = &self.view else {
             return Ok(());
         };
@@ -598,5 +741,34 @@ mod tests {
         assert!(!f.busy());
         f.event(&event(Keycode::Return));
         assert_eq!(f.input(), 0x3fe);
+    }
+    #[test]
+    fn save_exit_requires_game_success_and_disk_commit_and_errors_never_exit() {
+        let m = machine();
+        let mut f = Frontend::default();
+        assert!(!f.begin_save_exit());
+        f.observe(&m, 0x080011ed);
+        assert!(f.begin_save_exit());
+        assert!(!f.save_exit_complete());
+        f.observe(&m, 0x08007a15);
+        f.observe(&m, 0x08007a2d);
+        assert!(!f.save_exit_active());
+        assert!(!f.save_exit_complete());
+        assert!(f.take_save_exit_error().unwrap().contains("cannot save"));
+        f.observe(&m, 0x080011ed);
+        assert!(f.begin_save_exit());
+        f.observe(&m, 0x08007a15);
+        f.observe(&m, 0x08007aeb);
+        assert!(!f.save_exit_complete());
+        assert!(f.take_save_exit_error().is_some());
+        f.observe(&m, 0x080011ed);
+        assert!(f.begin_save_exit());
+        f.observe(&m, 0x08007a15);
+        f.observe(&m, 0x08007ad1);
+        assert!(f.save_exit_needs_commit());
+        assert!(!f.save_exit_complete());
+        f.finish_save_exit(Err("disk full".into()));
+        assert!(!f.save_exit_complete());
+        assert!(f.take_save_exit_error().unwrap().contains("disk full"));
     }
 }

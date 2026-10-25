@@ -81,6 +81,7 @@ pub struct Desktop {
     menu: Option<crate::options::Menu>,
     menu_skin: Option<std::sync::Arc<crate::game_menu::Skin>>,
     game_menu: crate::game_menu::Frontend,
+    save_exit_prior_pause: Option<bool>,
     release_input: bool,
     preferences_path: std::path::PathBuf,
     language: Option<String>,
@@ -250,6 +251,7 @@ impl Desktop {
             menu: None,
             menu_skin: None,
             game_menu: Default::default(),
+            save_exit_prior_pause: None,
             release_input: false,
             preferences_path,
             next_frame: Instant::now(),
@@ -262,7 +264,17 @@ impl Desktop {
     }
 
     pub fn paused(&self) -> bool {
-        self.paused || !self.focused || self.menu.is_some()
+        self.menu.is_some()
+            || (!self.game_menu.save_exit_active() && (self.paused || !self.focused))
+    }
+    pub fn save_exit_needs_commit(&self) -> bool {
+        self.game_menu.save_exit_needs_commit()
+    }
+    pub fn saving_game_for_exit(&self) -> bool {
+        self.game_menu.save_exit_active()
+    }
+    pub fn finish_save_exit(&mut self, result: Result<(), String>) {
+        self.game_menu.finish_save_exit(result);
     }
     pub fn set_menu_skin(&mut self, rom: &[u8]) -> Result<(), String> {
         self.menu_skin = Some(crate::game_menu::Skin::load(rom)?);
@@ -302,6 +314,7 @@ impl Desktop {
         )
         .with_languages(self.languages.clone());
         menu.skin = self.menu_skin.clone();
+        menu.can_save_game = self.menu_skin.is_some() && self.game_menu.can_save_exit();
         if quit {
             menu.request_quit();
         }
@@ -378,10 +391,23 @@ impl Desktop {
         renderer_available: bool,
         context: crate::control_context::Context,
     ) -> Result<Option<u16>, String> {
+        if self.game_menu.save_exit_complete() {
+            return Ok(None);
+        }
+        if let Some(error) = self.game_menu.take_save_exit_error() {
+            if let Some(paused) = self.save_exit_prior_pause.take() {
+                self.paused = paused;
+            }
+            self.open_options(*settings, true);
+            self.menu.as_mut().unwrap().message = error;
+        }
         self.renderer_available = renderer_available;
         let events: Vec<_> = self.events.poll_iter().collect();
         for event in events {
             if matches!(event, Event::Quit { .. }) {
+                if self.game_menu.save_exit_active() {
+                    continue;
+                }
                 return Ok(None);
             }
             if let Event::Window { win_event, .. } = event {
@@ -391,6 +417,9 @@ impl Desktop {
                     _ => {}
                 }
             }
+            if self.game_menu.save_exit_active() {
+                continue;
+            }
             if self.menu.is_some() {
                 if !self.focused {
                     continue;
@@ -399,6 +428,18 @@ impl Desktop {
                 match command {
                     crate::options::Command::None => {}
                     crate::options::Command::Quit => return Ok(None),
+                    crate::options::Command::SaveGameAndQuit => {
+                        if self.game_menu.begin_save_exit() {
+                            self.save_exit_prior_pause = Some(self.paused);
+                            self.paused = false;
+                            self.menu = None;
+                            self.release_input = false;
+                        } else {
+                            let menu = self.menu.as_mut().unwrap();
+                            menu.message = "Save is unavailable on this screen.".into();
+                            menu.invalidate();
+                        }
+                    }
                     crate::options::Command::Close => {
                         self.menu = None;
                         self.release_input = true;
@@ -598,7 +639,11 @@ impl Desktop {
             std::thread::sleep(Duration::from_millis(10));
             return Ok(Some(0x3ff));
         }
-        if self.menu_skin.is_some() && (self.game_menu.view.is_some() || self.game_menu.busy()) {
+        if self.menu_skin.is_some()
+            && (self.game_menu.view.is_some()
+                || self.game_menu.busy()
+                || self.game_menu.save_exit_active())
+        {
             self.update_aim_pointer(false);
             let busy = self.game_menu.busy();
             let keys = self.game_menu.input();
@@ -984,6 +1029,53 @@ mod tests {
         ui.release_input = false;
         assert_eq!(send(&mut ui, &mut settings, Keycode::Escape), 0x3fd);
         assert!(ui.menu.is_none());
+        ui.game_menu.cancel_navigation();
+        ui.release_input = false;
+        ui.observe_game_menu(&machine, 0x080011ed);
+        ui.game_menu.row = 7;
+        send(&mut ui, &mut settings, Keycode::Return);
+        assert!(ui.menu.as_ref().unwrap().can_save_game);
+        ui.present_paused(&mut textures).unwrap();
+        let pixels = ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+        let (w, h) = ui.canvas.output_size().unwrap();
+        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+        ppm.extend(pixels);
+        std::fs::write(directory.join("exit-save.ppm"), ppm).unwrap();
+        send(&mut ui, &mut settings, Keycode::Up);
+        send(&mut ui, &mut settings, Keycode::Up);
+        send(&mut ui, &mut settings, Keycode::Return);
+        assert!(ui.game_menu.save_exit_active());
+        assert!(!ui.paused());
+        events.push_event(Event::Quit { timestamp: 0 }).unwrap();
+        assert!(ui
+            .poll(&mut settings, true, crate::control_context::Context::Menu)
+            .unwrap()
+            .is_some());
+        ui.observe_game_menu(&machine, 0x08007a15);
+        ui.observe_game_menu(&machine, 0x08007ad1);
+        assert!(ui.save_exit_needs_commit());
+        ui.finish_save_exit(Err("disk full".into()));
+        assert!(ui
+            .poll(&mut settings, true, crate::control_context::Context::Menu)
+            .unwrap()
+            .is_some());
+        assert!(ui.paused());
+        assert!(ui.menu.as_ref().unwrap().message.contains("disk full"));
+        // Only a confirmed disk commit permits the next poll to close.
+        ui.menu = None;
+        ui.release_input = false;
+        ui.observe_game_menu(&machine, 0x080011ed);
+        ui.open_options(settings.clone(), true);
+        send(&mut ui, &mut settings, Keycode::Up);
+        send(&mut ui, &mut settings, Keycode::Up);
+        send(&mut ui, &mut settings, Keycode::Return);
+        ui.observe_game_menu(&machine, 0x08007a15);
+        ui.observe_game_menu(&machine, 0x08007ad1);
+        ui.finish_save_exit(Ok(()));
+        assert!(ui
+            .poll(&mut settings, true, crate::control_context::Context::Menu)
+            .unwrap()
+            .is_none());
     }
     #[test]
     #[ignore = "requires isolated SDL event queue"]
