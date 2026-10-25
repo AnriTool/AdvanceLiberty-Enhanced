@@ -62,6 +62,16 @@ class Tables(unittest.TestCase):
 
 
 class Packs(unittest.TestCase):
+    def test_menu_translations_templates_and_old_packs(self):
+        pack=copy.deepcopy(self.pack)
+        pack['menu']={'quit_to_menu':'В меню','save_failed':'Ошибка: {error}'}
+        result=texts.validate_pack(self.catalog,pack)
+        self.assertTrue(result['runtime_supported'])
+        self.assertEqual(result['menu_translated'],2)
+        for menu in ({'typo':'Text'},{'save_failed':'Ошибка'},{'back':'Ψ'}):
+            pack['menu']=menu
+            with self.assertRaises(texts.TextError):texts.validate_pack(self.catalog,pack)
+        self.assertEqual(texts.validate_pack(self.catalog,self.pack)['menu_translated'],0)
     def setUp(self):
         self.catalog = catalog()
         self.pack = texts.new_pack(self.catalog, 'ru', 'Русский', font_source=texts.legacy_font())

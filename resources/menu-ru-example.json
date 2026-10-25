@@ -1,0 +1,30 @@
+{
+  "menu": {
+    "quit_to_menu": "В главное меню",
+    "quit_to_desktop": "На рабочий стол",
+    "quit_to_desktop_action": "На рабочий стол...",
+    "resume_game": "Продолжить",
+    "options": "Настройки",
+    "brief": "Сводка",
+    "stats": "Статистика",
+    "camera": "Камера",
+    "game_paused": "Пауза",
+    "confirm_quit": "Подтверждение выхода",
+    "save_and_quit": "Сохранить и в меню",
+    "enhanced_options": "Настройки ПК",
+    "save_game_and_exit": "Сохранить и выйти",
+    "exit_without_saving": "Выйти без сохранения",
+    "back": "Назад",
+    "saving_game": "Сохранение...",
+    "save_exit_question": "Сохранить прогресс перед выходом?",
+    "pause_hint": "Стрелки: выбор   Enter: открыть   Esc: назад",
+    "confirm_hint": "Стрелки: выбор  Enter: подтвердить  Esc: назад",
+    "graphics": "Графика",
+    "fullscreen": "Полный экран",
+    "hud_size": "Размер интерфейса",
+    "language": "Язык",
+    "save_and_return": "Сохранить и назад",
+    "discard_and_return": "Отменить и назад",
+    "save_failed": "Не удалось сохранить: {error}"
+  }
+}

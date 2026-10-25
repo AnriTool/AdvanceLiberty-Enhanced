@@ -32,6 +32,7 @@ mod ground_projection;
 mod hud_layout;
 mod language_font;
 mod localization;
+mod menu_text;
 mod mouse_aim;
 mod native_audit;
 mod native_host;
@@ -709,7 +710,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ui) = desktop.as_mut() {
         ui.set_languages(language_choices);
         if !_original_menus {
-            ui.set_menu_skin(&m.bus.rom)?;
+            ui.set_menu_skin(&m.bus.rom, language.as_ref())?;
         }
     }
     #[cfg(feature = "desktop")]
@@ -824,7 +825,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(()) => {
                         active_language_file = selected;
                         if !_original_menus {
-                            ui.set_menu_skin(&m.bus.rom)?;
+                            ui.set_menu_skin(&m.bus.rom, language.as_ref())?;
                         }
                         eprintln!("Language applied live at frame {before}");
                     }

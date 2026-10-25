@@ -3,10 +3,12 @@ param(
     [string]$Rom,
     [string]$Gcc,
     [string]$OutputDirectory,
+    [string[]]$VerifySession,
     [switch]$SkipBuild,
     [switch]$Install
 )
 . (Join-Path $PSScriptRoot 'Project.ps1')
+. (Join-Path $PSScriptRoot 'Native.ps1')
 $Rom = Get-GameRom $Rom
 $manifestPath = Join-Path $ProjectRoot 'native/usa/manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -39,14 +41,32 @@ foreach ($entry in $selected) {
     if (!$counts.Success -or $counts.Groups[2].Value -ne '0') { throw "Incomplete native profile: $($entry.name)" }
     $variantCounts[$entry.name] = [uint64]$counts.Groups[1].Value
 }
-if ($Install) {
-    foreach ($entry in $selected) {
-        Copy-Item -LiteralPath (Join-Path $OutputDirectory ($entry.name + '.dll')) -Destination (Join-Path $ProjectRoot $entry.path) -Force
-        Copy-Item -LiteralPath (Join-Path $OutputDirectory ($entry.name + '.c')) -Destination (Join-Path $ProjectRoot $entry.source) -Force
-        $hash = (Get-FileHash -LiteralPath (Join-Path $ProjectRoot $entry.path)).Hash.ToLowerInvariant()
-        $entry | Add-Member -NotePropertyName sha256 -NotePropertyValue $hash -Force
-        $entry | Add-Member -NotePropertyName variants -NotePropertyValue $variantCounts[$entry.name] -Force
+foreach ($sessionPath in $VerifySession) {
+    if (!(Test-Path -LiteralPath $sessionPath -PathType Container)) { $sessionPath = Join-Path $ProjectRoot "data/sessions/$sessionPath" }
+    $sessionPath = (Resolve-Path -LiteralPath $sessionPath).Path
+    $summary = @{}
+    Get-Content -LiteralPath (Join-Path $sessionPath 'summary.txt') | ForEach-Object {
+        $pair = $_ -split '=',2
+        if ($pair.Length -eq 2) { $summary[$pair[0]] = $pair[1] }
     }
-    $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    if (![uint64]$summary.frames) { throw 'Completed nonempty session required for verification.' }
+    $replay = Join-Path $OutputDirectory ('verify-' + (Split-Path $sessionPath -Leaf) + '-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $replay)
+    Copy-Item -LiteralPath (Join-Path $sessionPath 'initial.sav') -Destination (Join-Path $replay 'replay.sav')
+    $libraries = @($manifest.libraries | ForEach-Object {
+        if ($variantCounts.ContainsKey($_.name)) { Join-Path $OutputDirectory ($_.name + '.dll') }
+        else { Join-Path $ProjectRoot $_.path }
+    })
+    Write-Host "Verifying $sessionPath ($($summary.frames) frames)..."
+    $exe = Join-Path $ProjectRoot 'target/release/gta-advance.exe'
+    & $exe $Rom (Join-Path $sessionPath 'input.gba-input') $summary.frames (Join-Path $replay 'frames.csv') multi @libraries --save (Join-Path $replay 'replay.sav') --audio-hashes --audit (Join-Path $replay 'fallbacks.csv') --require-native *> (Join-Path $replay 'runtime.log')
+    if ($LASTEXITCODE -ne 0) { throw "Native replay failed; active DLLs unchanged. See $replay" }
+    if ((Get-FileHash -LiteralPath (Join-Path $replay 'frames.csv')).Hash -ne (Get-FileHash -LiteralPath (Join-Path $sessionPath 'frames.csv')).Hash) {
+        throw "Video/audio hashes differ; active DLLs unchanged. See $replay"
+    }
+    Write-Host "MATCH: $($summary.frames) frames, no interpreter."
+}
+if ($Install) {
+    Install-NativeProfiles -Manifest $manifest -Selected $selected -VariantCounts $variantCounts -OutputDirectory $OutputDirectory -ProjectRoot $ProjectRoot
 }
 Write-Host "Native output: $OutputDirectory"

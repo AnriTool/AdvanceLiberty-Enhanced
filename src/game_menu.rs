@@ -33,6 +33,9 @@ pub struct Skin {
     widths: Vec<u8>,
     palette: Vec<Color>,
     labels: Vec<Vec<u8>>,
+    locale: crate::menu_text::Locale,
+    host: std::collections::BTreeMap<String, Vec<u8>>,
+    font: Option<crate::localization::Font>,
 }
 impl Skin {
     pub fn load(rom: &[u8]) -> Result<Arc<Self>, String> {
@@ -91,7 +94,68 @@ impl Skin {
                 .map(|i| read(0x8312d0 + i * 2).map(|v| rgb(v as u16)))
                 .collect::<Result<_, _>>()?,
             labels,
+            locale: Default::default(),
+            host: crate::menu_text::catalog()
+                .iter()
+                .map(|(id, text)| {
+                    (
+                        id.clone(),
+                        crate::menu_text::encode(text, None).expect("English menu text"),
+                    )
+                })
+                .collect(),
+            font: None,
         }))
+    }
+    pub fn apply_language(
+        &mut self,
+        language: Option<&crate::localization::Language>,
+    ) -> Result<(), String> {
+        if let Some(language) = language {
+            self.locale.strings = language.menu.clone();
+            self.font = Some(language.menu_font.clone());
+            for (i, code) in crate::language_font::private_codes()
+                .into_iter()
+                .take(language.menu_font.len())
+                .enumerate()
+            {
+                let slot = code as usize - 32;
+                self.glyphs[slot * 256..(slot + 1) * 256]
+                    .copy_from_slice(&language.menu_color_font.tiles[i]);
+                self.widths[slot] = language.menu_color_font.widths[i];
+            }
+        }
+        self.host = crate::menu_text::catalog()
+            .keys()
+            .map(|id| {
+                Ok((
+                    id.clone(),
+                    crate::menu_text::encode(self.locale.text(id), self.font.as_ref())?,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(())
+    }
+    pub fn host(&self, id: &str) -> &[u8] {
+        self.host.get(id).map_or(b"?", Vec::as_slice)
+    }
+    pub fn translate(&self, text: &str) -> String {
+        self.locale.translate(text)
+    }
+    pub fn can_encode(&self, text: &str) -> bool {
+        crate::menu_text::encode(text, self.font.as_ref()).is_ok()
+    }
+    pub fn text_utf8<T: RenderTarget>(
+        &self,
+        canvas: &mut Canvas<T>,
+        x: i32,
+        y: i32,
+        text: &str,
+        scale: u32,
+        limit: i32,
+    ) -> Result<(), String> {
+        let encoded = crate::menu_text::encode_lossy(&self.translate(text), self.font.as_ref());
+        self.text(canvas, x, y, &encoded, scale, limit)
     }
     pub fn background<T: RenderTarget>(&self, canvas: &mut Canvas<T>) -> Result<(), String> {
         for y in 0..160 {
@@ -114,6 +178,11 @@ impl Skin {
         Ok(())
     }
     pub fn label(&self, id: u32) -> &[u8] {
+        if let Some(key) = crate::menu_text::native_key(id) {
+            if id == 9 || self.locale.strings.get(key).is_some_and(|s| !s.is_empty()) {
+                return self.host(key);
+            }
+        }
         self.labels.get(id as usize).map_or(b"?", Vec::as_slice)
     }
     fn width(&self, text: &[u8], scale: u32) -> i32 {
@@ -559,8 +628,8 @@ impl Frontend {
     pub fn draw<T: RenderTarget>(&self, canvas: &mut Canvas<T>, skin: &Skin) -> Result<(), String> {
         if self.save_exit_active() {
             skin.background(canvas)?;
-            skin.text(canvas, 40, 32, b"EXIT APPLICATION", 2, 680)?;
-            skin.text(canvas, 40, 180, b"SAVING GAME...", 2, 680)?;
+            skin.text(canvas, 40, 32, skin.host("quit_to_desktop"), 2, 680)?;
+            skin.text(canvas, 40, 180, skin.host("saving_game"), 2, 680)?;
             canvas.present();
             return Ok(());
         }
@@ -592,9 +661,9 @@ impl Frontend {
             let label = if i < v.ids.len() {
                 skin.label(v.ids[i])
             } else if i == v.ids.len() {
-                b"ENHANCED OPTIONS"
+                skin.host("enhanced_options")
             } else {
-                b"EXIT APPLICATION"
+                skin.host("quit_to_desktop")
             };
             skin.text(
                 canvas,
@@ -605,14 +674,7 @@ impl Frontend {
                 672,
             )?;
         }
-        skin.text(
-            canvas,
-            40,
-            434,
-            b"ARROWS: SELECT   ENTER: OPEN   ESC: BACK",
-            1,
-            680,
-        )?;
+        skin.text(canvas, 40, 434, skin.host("pause_hint"), 1, 680)?;
         canvas.present();
         Ok(())
     }

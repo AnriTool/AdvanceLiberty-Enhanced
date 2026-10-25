@@ -27,6 +27,7 @@ UI_COUNT = 618
 FORMAT = 'gta-advance-text-catalog-v1'
 PACK_VERSION = 2
 LEGACY_PACK_FORMAT = 'gta-advance-language-pack-v1'
+MENU_TEXTS = json.loads((Path(__file__).resolve().parents[2] / 'resources/menu-en.json').read_text(encoding='utf-8'))
 PROFILES = {USA_SHA: 'usa', EU_SHA: 'europe', RU_SHA: 'ru-custom-font'}
 
 
@@ -195,7 +196,7 @@ def upgrade_pack(pack, font_source=None):
             result['color_font']=copy.deepcopy(font_source['color_font'])
         else:
             result.pop('color_font',None)
-    allowed = {'version','language','name','fallback','alphabet','font','color_font','entries','source_rom_sha256','source_slot'}
+    allowed = {'version','language','name','fallback','alphabet','font','color_font','entries','menu','source_rom_sha256','source_slot'}
     if set(result)-allowed:
         raise TextError('Unknown pack fields: ' + ', '.join(sorted(set(result)-allowed)))
     if not isinstance(result.get('language'),str) or not re.fullmatch(r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*',result['language']):
@@ -272,7 +273,8 @@ def new_pack(catalog, language, name, source_language=None, font_source=None):
     if not re.fullmatch(r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*', language):
         raise TextError('Language must be a tag such as ru, fr or pt-BR')
     result = dict(version=PACK_VERSION, language=language, name=name, alphabet='',
-                  entries={key: entry['texts'][source_language] if source_language else '' for key, entry in entries.items()})
+                  entries={key: entry['texts'][source_language] if source_language else '' for key, entry in entries.items()},
+                  menu={key: value if source_language=='en' else '' for key,value in MENU_TEXTS.items()})
     if font_source is not None:
         result.update(alphabet=copy.deepcopy(font_source.get('alphabet','')),font=copy.deepcopy(font_source.get('font')))
         if 'color_font' in font_source:result['color_font']=copy.deepcopy(font_source['color_font'])
@@ -327,7 +329,22 @@ def validate_pack(catalog, pack):
         # A conservative warning, not a guessed reconstruction of game layout.
         if len(text) > len(original) * 1.5 + 20:
             warnings.append(dict(id=identifier, reason='longer-than-source', source_length=len(original), target_length=len(text)))
+    menu=pack.get('menu',{})
+    if not isinstance(menu,dict):raise TextError('menu must be an object')
+    for identifier,text in menu.items():
+        if identifier not in MENU_TEXTS:raise TextError(f'Unknown menu ID: {identifier}')
+        if not isinstance(text,str) or len(text)>512 or any(ord(c)<32 or 0x7f<=ord(c)<0xa0 for c in text):raise TextError(f'Invalid menu text: {identifier}')
+        if not text:continue
+        placeholders=lambda s:sorted(re.findall(r'\{([^}]+)\}',s))
+        if placeholders(text)!=placeholders(MENU_TEXTS[identifier]):raise TextError(f'Preserve menu placeholders: {identifier}')
+        for char in text:
+            if char in custom:non_latin1.add(char);continue
+            char={'’':"'",'‘':"'",'“':'"','”':'"','—':'-','–':'-'}.get(char,char)
+            for c in char.upper():
+                if c in custom:non_latin1.add(c)
+                elif c!='\n' and not 32<=ord(c)<=255:raise TextError(f'Menu font has no glyph for {c}: {identifier}')
     return dict(valid=True, entries=len(entries), translated=translated,
+                menu_translated=sum(bool(v) for v in menu.values()),
                 fallback_entries=len(entries)-translated,
                 requires_extended_font=bool(non_latin1), extended_characters=''.join(sorted(non_latin1)),
                 custom_glyphs=len(pack.get('alphabet','')),

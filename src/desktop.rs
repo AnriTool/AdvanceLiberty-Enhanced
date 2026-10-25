@@ -276,8 +276,16 @@ impl Desktop {
     pub fn finish_save_exit(&mut self, result: Result<(), String>) {
         self.game_menu.finish_save_exit(result);
     }
-    pub fn set_menu_skin(&mut self, rom: &[u8]) -> Result<(), String> {
-        self.menu_skin = Some(crate::game_menu::Skin::load(rom)?);
+    pub fn set_menu_skin(
+        &mut self,
+        rom: &[u8],
+        language: Option<&crate::localization::Language>,
+    ) -> Result<(), String> {
+        let mut skin = crate::game_menu::Skin::load(rom)?;
+        std::sync::Arc::get_mut(&mut skin)
+            .unwrap()
+            .apply_language(language)?;
+        self.menu_skin = Some(skin);
         Ok(())
     }
     pub fn observe_game_menu(&mut self, machine: &gba_core::Machine, key: u32) {
@@ -927,6 +935,63 @@ impl Desktop {
 mod tests {
     #[test]
     #[ignore = "requires USA ROM and isolated SDL event queue"]
+    fn localized_pause_and_settings_real_sdl() {
+        use super::*;
+        let directory = std::env::var_os("GTA_MENU_TEST_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("menu-localized-{}", std::process::id()))
+            });
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut pack: serde_json::Value = serde_json::from_slice(
+            &std::fs::read("resources/legacy-language-v1-font.json").unwrap(),
+        )
+        .unwrap();
+        pack["version"] = 2.into();
+        pack["language"] = "ru-menu".into();
+        pack["name"] = "Russian menu test".into();
+        pack["entries"] = serde_json::json!({});
+        pack["menu"] = serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read("resources/menu-ru-example.json").unwrap(),
+        )
+        .unwrap()["menu"]
+            .clone();
+        let pack_path = directory.join("pack.json");
+        std::fs::write(&pack_path, serde_json::to_vec_pretty(&pack).unwrap()).unwrap();
+        let rom = std::fs::read("roms/usa.gba").unwrap();
+        let mut language = crate::localization::Language::load(&pack_path, &rom).unwrap();
+        let mut machine = gba_core::Machine::new(rom);
+        language.install(&mut machine);
+        machine.cpu.regs[0] = crate::game_menu::ROOT;
+        let controls = directory.join("controls.cfg");
+        std::fs::write(&controls, crate::controls::Controls::default_file()).unwrap();
+        let mut ui = Desktop::new(controls).unwrap();
+        ui.set_menu_skin(&machine.bus.rom, Some(&language)).unwrap();
+        let skin = ui.menu_skin.as_ref().unwrap();
+        assert_eq!(skin.translate("Quit to Desktop"), "На рабочий стол");
+        assert_eq!(skin.label(9), skin.host("quit_to_menu"));
+        assert!(skin.host("quit_to_desktop").iter().any(|b| *b >= 128));
+        ui.observe_game_menu(&machine, 0x080011ed);
+        let mut ppm = b"P6\n720 480\n255\n".to_vec();
+        ppm.extend(ui.menu_pixels().unwrap().unwrap());
+        std::fs::write(directory.join("pause-ru.ppm"), ppm).unwrap();
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        ui.open_options(crate::render_settings::Settings::default(), false);
+        ui.present_paused(&mut textures).unwrap();
+        let pixels = ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+        let (w, h) = ui.canvas.output_size().unwrap();
+        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+        ppm.extend(pixels);
+        std::fs::write(directory.join("settings-ru.ppm"), ppm).unwrap();
+        ui.set_menu_skin(&machine.bus.rom, None).unwrap();
+        assert_eq!(
+            ui.menu_skin.as_ref().unwrap().host("quit_to_desktop"),
+            b"QUIT TO DESKTOP"
+        );
+    }
+    #[test]
+    #[ignore = "requires USA ROM and isolated SDL event queue"]
     fn native_menu_frontend_real_sdl() {
         use super::*;
         let directory = std::env::var_os("GTA_MENU_TEST_DIR")
@@ -941,7 +1006,7 @@ mod tests {
         let mut machine = gba_core::Machine::new(rom);
         machine.cpu.regs[0] = crate::game_menu::ROOT;
         let mut ui = Desktop::new(path).unwrap();
-        ui.set_menu_skin(&machine.bus.rom).unwrap();
+        ui.set_menu_skin(&machine.bus.rom, None).unwrap();
         ui.observe_game_menu(&machine, 0x080011ed);
         let cpu = machine.cpu.clone();
         let ram = machine.bus.ewram.clone();

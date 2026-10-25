@@ -222,16 +222,18 @@ impl Menu {
         font: Option<&crate::localization::Font>,
     ) -> Result<(), String> {
         if let Some(skin) = &self.skin {
-            if value.is_ascii() {
-                return skin.text(
-                    canvas,
-                    x,
-                    y,
-                    value.to_uppercase().as_bytes(),
-                    if scale >= 3 { 2 } else { 1 },
-                    690,
-                );
+            let localized = skin.translate(value);
+            if font.is_some() && !skin.can_encode(&localized) {
+                return text_with_font(canvas, x, y, &localized, color, scale, font);
             }
+            return skin.text_utf8(
+                canvas,
+                x,
+                y,
+                value,
+                if scale >= 3 { 2 } else { 1 },
+                if x == 40 { 290 } else { 690 },
+            );
         }
         text_with_font(canvas, x, y, value, color, scale, font)
     }
@@ -409,7 +411,7 @@ impl Menu {
                         self.capture = None;
                         self.message = "Binding updated (not saved yet)".into();
                     }
-                    Err(e) => self.message = e,
+                    Err(e) => self.message = format!("Binding error: {e}"),
                 }
             }
             return Command::None;
@@ -481,7 +483,7 @@ impl Menu {
                         .rebind(self.section.unwrap(), self.row, None, false)
                     {
                         Ok(()) => "Binding cleared (not saved yet)".into(),
-                        Err(e) => e,
+                        Err(e) => format!("Binding error: {e}"),
                     };
             }
             _ => {}
@@ -537,7 +539,7 @@ impl Menu {
             38,
             36,
             if self.confirm_quit {
-                "EXIT APPLICATION"
+                "Quit to Desktop"
             } else {
                 "ENHANCED OPTIONS"
             },
@@ -548,7 +550,7 @@ impl Menu {
             if self.can_save_game {
                 "Save progress? Unsaved PC options are discarded."
             } else {
-                "Quit game? Unsaved options will be discarded."
+                "Quit to Desktop? Unsaved options will be discarded."
             }
         } else if self.language_page {
             "LANGUAGE / APPLIES WHEN SAVED"
@@ -574,7 +576,7 @@ impl Menu {
                 ]
             } else {
                 vec![
-                    ("Quit game".into(), String::new()),
+                    ("Quit to Desktop".into(), String::new()),
                     ("Back".into(), String::new()),
                 ]
             }
@@ -678,7 +680,7 @@ impl Menu {
                 ("Language".into(), self.language_label()),
                 ("Save and return".into(), String::new()),
                 ("Discard and return".into(), String::new()),
-                ("Quit game...".into(), String::new()),
+                ("Quit to Desktop...".into(), String::new()),
             ]
         };
         for (i, (label, value)) in rows.iter().enumerate().skip(self.first_row()).take(11) {
@@ -761,7 +763,11 @@ impl Menu {
         } else {
             &self.message
         };
-        let chars: Vec<_> = message.chars().collect();
+        let localized_message = self
+            .skin
+            .as_ref()
+            .map_or_else(|| message.to_owned(), |skin| skin.translate(message));
+        let chars: Vec<_> = localized_message.chars().collect();
         for (i, line) in chars.chunks(53).take(2).enumerate() {
             self.text(
                 canvas,

@@ -91,6 +91,18 @@ pub fn ensure_english(
             added += 1;
         }
     }
+    if pack.get("menu").is_none() {
+        pack["menu"] = serde_json::json!({});
+    }
+    let Some(menu) = pack["menu"].as_object_mut() else {
+        return Ok(None);
+    };
+    for (id, english) in crate::menu_text::catalog() {
+        if !menu.contains_key(id) {
+            menu.insert(id.clone(), english.clone().into());
+            added += 1;
+        }
+    }
     if previous.is_some() && added == 0 {
         return Ok(None);
     }
@@ -204,6 +216,8 @@ struct PackV2 {
     color_font: Option<ColorDefinition>,
     #[serde(deserialize_with = "crate::language_font::unique_map")]
     entries: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "crate::language_font::unique_map")]
+    menu: BTreeMap<String, String>,
     #[serde(default)]
     source_rom_sha256: Option<String>,
     #[serde(default)]
@@ -227,6 +241,7 @@ struct Pack {
     entries: BTreeMap<String, String>,
     font: Font,
     color_font: ColorFont,
+    menu: BTreeMap<String, String>,
 }
 fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
@@ -246,6 +261,7 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
             entries: pack.entries,
             font,
             color_font,
+            menu: pack.menu,
         })
     } else {
         let pack: LegacyPack = serde_json::from_slice(bytes)?;
@@ -265,6 +281,7 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
             entries: pack.entries,
             font,
             color_font,
+            menu: BTreeMap::new(),
         })
     }
 }
@@ -396,6 +413,9 @@ pub struct Language {
     pub glyph_calls: u64,
     pub font: Font,
     color_font: ColorFont,
+    pub menu: BTreeMap<String, String>,
+    pub(crate) menu_font: Font,
+    pub(crate) menu_color_font: ColorFont,
     rom: Vec<u8>,
 }
 impl Language {
@@ -413,6 +433,7 @@ impl Language {
             return Err("Language packs require the verified USA ROM".into());
         }
         let pack = parse_pack(&bytes)?;
+        crate::menu_text::validate(&pack.menu, &pack.font)?;
         if pack.fallback != "en" {
             return Err("Only English fallback is supported".into());
         }
@@ -496,8 +517,11 @@ impl Language {
             translated,
             extended,
             glyph_calls: 0,
+            menu_font: pack.font.clone(),
+            menu_color_font: pack.color_font.clone(),
             font: pack.font,
             color_font: pack.color_font,
+            menu: pack.menu,
             rom: image,
         })
     }
@@ -878,6 +902,57 @@ pub fn test_font() -> Font {
 mod tests {
     use super::*;
     #[test]
+    fn host_menu_schema_is_optional_and_duplicate_keys_are_rejected() {
+        let original = br#"{"version":2,"language":"en","name":"English","entries":{}}"#;
+        assert!(parse_pack(original).unwrap().menu.is_empty());
+        let bad=br#"{"version":2,"language":"en","name":"English","entries":{},"menu":{"back":"Back","back":"Return"}}"#;
+        assert!(parse_pack(bad).is_err());
+    }
+    #[test]
+    #[ignore = "requires the user's USA ROM"]
+    fn host_menu_only_pack_keeps_guest_fonts_and_live_switches_alphabets() {
+        let rom = fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").unwrap()).unwrap();
+        let mut machine = Machine::new(rom.clone());
+        let mut current = None;
+        let ru = fs::read("resources/legacy-language-v1-font.json").unwrap();
+        let font: serde_json::Value = serde_json::from_slice(&ru).unwrap();
+        let pack = serde_json::json!({"version":2,"language":"ru","name":"Russian","alphabet":font["alphabet"],"font":font["font"],"entries":{"text.00cabf84":"МИССИЯ"}});
+        change_live(
+            &mut machine,
+            &rom,
+            &mut current,
+            Some(pack.to_string().into_bytes()),
+        )
+        .unwrap();
+        let greek = serde_json::json!({"version":2,"language":"el","name":"Greek","alphabet":"Ω","font":{"width":3,"height":3,"glyphs":{"Ω":["###","#.#","###"]}},"entries":{},"menu":{"quit_to_desktop":"Ω"}});
+        let language = Language::from_bytes(greek.to_string().into_bytes(), &rom).unwrap();
+        assert!(!language.extended);
+        assert_eq!(&language.rom[0x8314d0..0x83f4d0], &rom[0x8314d0..0x83f4d0]);
+        change_live(
+            &mut machine,
+            &rom,
+            &mut current,
+            Some(greek.to_string().into_bytes()),
+        )
+        .unwrap();
+        let language = current.as_ref().unwrap();
+        assert!(
+            language.font.encode('М').is_some(),
+            "unfinished guest text retains its previous font"
+        );
+        assert!(language.menu_font.encode('Ω').is_some());
+        assert_eq!(language.menu["quit_to_desktop"], "Ω");
+        #[cfg(feature = "desktop")]
+        {
+            let mut skin = crate::game_menu::Skin::load(&machine.bus.rom).unwrap();
+            std::sync::Arc::get_mut(&mut skin)
+                .unwrap()
+                .apply_language(current.as_ref())
+                .unwrap();
+            assert_eq!(skin.host("quit_to_desktop"), &[0x80]);
+        }
+    }
+    #[test]
     #[ignore = "requires the user's USA ROM"]
     fn live_change_keeps_game_state_and_reuses_memory_arenas() {
         let rom = fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").unwrap()).unwrap();
@@ -1117,6 +1192,9 @@ mod tests {
             glyph_calls: 0,
             font: test_font(),
             color_font: ColorFont::generated(&test_font()),
+            menu: BTreeMap::new(),
+            menu_font: test_font(),
+            menu_color_font: ColorFont::generated(&test_font()),
             rom: vec![],
         };
         m.cpu.regs[0] = u32::MAX;
