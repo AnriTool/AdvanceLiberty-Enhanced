@@ -158,10 +158,11 @@ fn binding(names: &str, line: usize, optional: bool) -> Result<Vec<Binding>, Str
                     | Scancode::F6
                     | Scancode::F8
                     | Scancode::F11
+                    | Scancode::F12
             )
         ) {
             return Err(format!(
-                "Controls line {line}: P, Escape, F5, F6, F8 and F11 are reserved"
+                "Controls line {line}: P, Escape, F5, F6, F8, F11 and F12 are reserved"
             ));
         }
         if keys.contains(&key) {

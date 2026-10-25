@@ -16,6 +16,8 @@ mod building_projection;
 mod camera_preview;
 mod camera_trace;
 mod cash_protection;
+#[cfg(feature = "desktop")]
+mod cheats;
 mod color_effects;
 mod control_context;
 #[cfg(feature = "desktop")]
@@ -910,6 +912,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "desktop")]
         if let Some(ui) = desktop.as_mut() {
+            ui.sync_cheats(&m.bus);
             let Some(keys) = ui.poll(&mut render_settings, preview_enabled, control_context)?
             else {
                 break;
@@ -1013,6 +1016,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(probe) = pickup_probe.as_mut() {
                     if pickup_probe::Probe::interested(key) {
                         probe.observe(&m, key)?;
+                    }
+                }
+                #[cfg(feature = "desktop")]
+                if key == cheats::MAIN_CHECK {
+                    if let Some(ui) = desktop.as_mut() {
+                        ui.observe_cheat_menu(m.bus.frames);
                     }
                 }
                 #[cfg(feature = "desktop")]

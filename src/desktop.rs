@@ -64,6 +64,7 @@ impl<'a> Textures<'a> {
 }
 
 pub struct Desktop {
+    cheats: crate::cheats::Panel,
     aim_pointer: Option<sdl2::mouse::Cursor>,
     arrow_pointer: Option<sdl2::mouse::Cursor>,
     pointer_is_aim: bool,
@@ -220,6 +221,7 @@ impl Desktop {
             }
         };
         Ok(Self {
+            cheats: Default::default(),
             aim_pointer,
             arrow_pointer,
             pointer_is_aim: false,
@@ -469,6 +471,14 @@ impl Desktop {
             if self.release_input {
                 continue;
             }
+            if self.focused && !self.paused() && self.cheats.event(&event) {
+                self.game_menu.cancel_navigation();
+                if !self.cheats.visible {
+                    self.release_input = true;
+                }
+                self.input_latch = Default::default();
+                continue;
+            }
             if self.menu_skin.is_some()
                 && self.game_menu.view.is_some()
                 && !matches!(
@@ -647,6 +657,15 @@ impl Desktop {
             std::thread::sleep(Duration::from_millis(10));
             return Ok(Some(0x3ff));
         }
+        if self.cheats.captures_input() {
+            self.update_aim_pointer(false);
+            let visible = self.cheats.visible;
+            let keys = self.cheats.input();
+            if visible && !self.cheats.visible {
+                self.release_input = true;
+            }
+            return Ok(Some(keys));
+        }
         if self.menu_skin.is_some()
             && (self.game_menu.view.is_some()
                 || self.game_menu.busy()
@@ -726,7 +745,16 @@ impl Desktop {
         self.aim_projection = projection;
     }
     pub fn mouse_aim_enabled(&self) -> bool {
-        self.controls.mouse_aim() && !self.paused() && !self.release_input
+        self.controls.mouse_aim()
+            && !self.paused()
+            && !self.release_input
+            && !self.cheats.captures_input()
+    }
+    pub fn sync_cheats(&mut self, bus: &gba_core::MemMap) {
+        self.cheats.sync(bus);
+    }
+    pub fn observe_cheat_menu(&mut self, frame: u64) {
+        self.cheats.observe(frame);
     }
     pub fn aim_angle(&mut self, bus: &gba_core::MemMap) -> Option<u16> {
         if self.paused() || self.release_input || !self.controls.mouse_aim() {
@@ -862,7 +890,6 @@ impl Desktop {
                 self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
                 self.canvas.clear();
                 self.canvas.copy(texture, None, None)?;
-                self.canvas.present();
                 self.frame_size = (720, 480);
                 // Keep the normal frame pacing/audio bookkeeping below.
             }
@@ -896,8 +923,10 @@ impl Desktop {
             self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
             self.canvas.clear();
             self.canvas.copy(texture, None, None)?;
-            self.canvas.present();
         }
+        self.cheats
+            .draw(&mut self.canvas, self.menu_skin.as_deref())?;
+        self.canvas.present();
         self.present_frames += 1;
         self.present_ns += start.elapsed().as_nanos();
         {
@@ -933,6 +962,73 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires isolated SDL dummy driver and output directory"]
+    fn cheat_panel_real_sdl() {
+        use super::*;
+        use sdl2::keyboard::Mod;
+        let root = std::path::PathBuf::from(std::env::var_os("GTA_CHEAT_TEST_DIR").unwrap());
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("controls.cfg");
+        std::fs::write(&path, crate::controls::Controls::default_file()).unwrap();
+        let mut ui = Desktop::new(path).unwrap();
+        let events = ui._sdl.event().unwrap();
+        let mut settings = crate::render_settings::Settings::default();
+        let mut bus = gba_core::MemMap::new(vec![0; 0x200]);
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let event = |key, keymod| Event::KeyDown {
+            timestamp: 0,
+            window_id: 0,
+            keycode: Some(key),
+            scancode: None,
+            keymod,
+            repeat: false,
+        };
+        events
+            .push_event(event(Keycode::F12, Mod::LCTRLMOD))
+            .unwrap();
+        assert_eq!(
+            ui.poll(&mut settings, true, crate::control_context::Context::Menu)
+                .unwrap(),
+            Some(0x3ff)
+        );
+        assert!(ui.cheats.visible);
+        // Original and both Enhanced widths use the same readable panel scale.
+        for width in [240, 720, 854] {
+            let preview = vec![0u16; width * 480];
+            ui.present(
+                &bus,
+                (width != 240).then_some(preview.as_slice()),
+                &mut textures,
+            )
+            .unwrap();
+            let (w, h) = ui.canvas.output_size().unwrap();
+            let pixels = ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+            assert!(pixels.chunks_exact(3).any(|p| p == [255, 220, 70]));
+            let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+            ppm.extend(pixels);
+            std::fs::write(root.join(format!("panel-{width}.ppm")), ppm).unwrap();
+        }
+        // Escape closes only the panel and does not send Start into the game.
+        events
+            .push_event(event(Keycode::Escape, Mod::NOMOD))
+            .unwrap();
+        assert_eq!(
+            ui.poll(&mut settings, true, crate::control_context::Context::Menu)
+                .unwrap(),
+            Some(0x3ff)
+        );
+        assert!(!ui.cheats.visible);
+        bus.framebuffer.fill(31);
+        ui.present(&bus, None, &mut textures).unwrap();
+        assert!(ui
+            .canvas
+            .read_pixels(None, PixelFormatEnum::RGB24)
+            .unwrap()
+            .chunks_exact(3)
+            .all(|p| p == [255, 0, 0]));
+    }
     #[test]
     #[ignore = "requires USA ROM and isolated SDL event queue"]
     fn localized_pause_and_settings_real_sdl() {

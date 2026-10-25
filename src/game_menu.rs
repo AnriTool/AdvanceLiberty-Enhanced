@@ -142,6 +142,25 @@ impl Skin {
     pub fn translate(&self, text: &str) -> String {
         self.locale.translate(text)
     }
+    pub fn small_text<T: RenderTarget>(
+        &self,
+        canvas: &mut Canvas<T>,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Color,
+        scale: u32,
+    ) -> Result<(), String> {
+        crate::options::text_with_font(
+            canvas,
+            x,
+            y,
+            &self.translate(text),
+            color,
+            scale,
+            self.font.as_ref(),
+        )
+    }
     pub fn can_encode(&self, text: &str) -> bool {
         crate::menu_text::encode(text, self.font.as_ref()).is_ok()
     }

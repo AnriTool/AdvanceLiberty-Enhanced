@@ -863,12 +863,14 @@ fn glyph(c: char) -> [u8; 7] {
         '\'' => [4, 4, 8, 0, 0, 0, 0],
         '?' => [14, 17, 1, 2, 4, 0, 4],
         '%' => [25, 26, 2, 4, 8, 11, 19],
+        '$' => [4, 15, 20, 14, 5, 30, 4],
+        '|' => [4; 7],
         '_' => [0, 0, 0, 0, 0, 0, 31],
         ' ' => [0; 7],
         _ => [31, 17, 1, 2, 4, 0, 4],
     }
 }
-fn text_with_font<T: sdl2::render::RenderTarget>(
+pub(crate) fn text_with_font<T: sdl2::render::RenderTarget>(
     canvas: &mut Canvas<T>,
     x: i32,
     y: i32,
