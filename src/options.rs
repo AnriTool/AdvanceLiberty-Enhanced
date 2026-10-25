@@ -164,7 +164,9 @@ pub struct Menu {
     capture: Option<bool>, // false replaces, true adds an alternative
     pub message: String,
     confirm_quit: bool,
+    exit_only: bool,
     cached: Option<sdl2::surface::Surface<'static>>,
+    pub skin: Option<std::sync::Arc<crate::game_menu::Skin>>,
 }
 impl Menu {
     pub fn new(controls: Controls, prefs: Preferences) -> Self {
@@ -181,12 +183,54 @@ impl Menu {
             capture: None,
             message: String::new(),
             confirm_quit: false,
+            exit_only: false,
             cached: None,
+            skin: None,
         }
     }
     pub fn with_languages(mut self, languages: Vec<crate::localization::Choice>) -> Self {
         self.languages = languages;
         self
+    }
+    pub fn request_quit(&mut self) {
+        self.confirm_quit = true;
+        self.exit_only = true;
+        self.row = 1;
+    }
+    fn text<T: sdl2::render::RenderTarget>(
+        &self,
+        canvas: &mut Canvas<T>,
+        x: i32,
+        y: i32,
+        value: &str,
+        color: Color,
+        scale: u32,
+    ) -> Result<(), String> {
+        self.text_with_font(canvas, x, y, value, color, scale, None)
+    }
+    fn text_with_font<T: sdl2::render::RenderTarget>(
+        &self,
+        canvas: &mut Canvas<T>,
+        x: i32,
+        y: i32,
+        value: &str,
+        color: Color,
+        scale: u32,
+        font: Option<&crate::localization::Font>,
+    ) -> Result<(), String> {
+        if let Some(skin) = &self.skin {
+            if value.is_ascii() {
+                return skin.text(
+                    canvas,
+                    x,
+                    y,
+                    value.to_uppercase().as_bytes(),
+                    if scale >= 3 { 2 } else { 1 },
+                    690,
+                );
+            }
+        }
+        text_with_font(canvas, x, y, value, color, scale, font)
     }
     pub fn refresh_languages(&mut self, languages: Vec<crate::localization::Choice>) {
         self.languages = languages;
@@ -223,6 +267,9 @@ impl Menu {
         if self.capture.take().is_some() {
             self.message.clear();
         } else if self.confirm_quit {
+            if self.exit_only {
+                return Command::Close;
+            }
             self.confirm_quit = false;
             self.row = 11;
         } else if self.language_page {
@@ -474,9 +521,13 @@ impl Menu {
     ) -> Result<(), String> {
         canvas.set_draw_color(Color::RGB(13, 22, 39));
         canvas.clear();
-        canvas.set_draw_color(Color::RGB(32, 51, 73));
-        canvas.fill_rect(Rect::new(20, 20, 680, 440))?;
-        text(
+        if let Some(skin) = &self.skin {
+            skin.background(canvas)?;
+        } else {
+            canvas.set_draw_color(Color::RGB(32, 51, 73));
+            canvas.fill_rect(Rect::new(20, 20, 680, 440))?;
+        }
+        self.text(
             canvas,
             38,
             36,
@@ -487,7 +538,7 @@ impl Menu {
         let subtitle = if self.confirm_quit {
             "Quit game? Unsaved options will be discarded."
         } else if self.language_page {
-            "LANGUAGE / APPLIES ON NEXT LAUNCH"
+            "LANGUAGE / APPLIES WHEN SAVED"
         } else if self.graphics_page {
             "GRAPHICS / ENHANCED RENDERER"
         } else if self.hud_page {
@@ -500,7 +551,7 @@ impl Menu {
                 None => "PC settings - changes apply when saved",
             }
         };
-        text(canvas, 38, 74, subtitle, Color::RGB(169, 192, 208), 2)?;
+        self.text(canvas, 38, 74, subtitle, Color::RGB(169, 192, 208), 2)?;
         let rows: Vec<(String, String)> = if self.confirm_quit {
             vec![
                 ("Quit game".into(), String::new()),
@@ -638,7 +689,7 @@ impl Menu {
             } else {
                 None
             };
-            text_with_font(
+            self.text_with_font(
                 canvas,
                 40,
                 y + 5,
@@ -647,7 +698,7 @@ impl Menu {
                 2,
                 if self.language_page { font } else { None },
             )?;
-            text_with_font(
+            self.text_with_font(
                 canvas,
                 302,
                 y + 5,
@@ -673,7 +724,7 @@ impl Menu {
         } else {
             "Arrows: select  Enter: change  Esc: discard"
         };
-        text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
+        self.text(canvas, 38, 392, hint, Color::RGB(169, 192, 208), 2)?;
         let message = if self.language_page && self.message.is_empty() {
             "Packs: languages/*.json. Save to apply now."
         } else if aim_row {
@@ -689,7 +740,7 @@ impl Menu {
         };
         let chars: Vec<_> = message.chars().collect();
         for (i, line) in chars.chunks(53).take(2).enumerate() {
-            text(
+            self.text(
                 canvas,
                 38,
                 420 + i as i32 * 17,
@@ -787,16 +838,6 @@ fn glyph(c: char) -> [u8; 7] {
         ' ' => [0; 7],
         _ => [31, 17, 1, 2, 4, 0, 4],
     }
-}
-fn text<T: sdl2::render::RenderTarget>(
-    canvas: &mut Canvas<T>,
-    x: i32,
-    y: i32,
-    value: &str,
-    color: Color,
-    scale: u32,
-) -> Result<(), String> {
-    text_with_font(canvas, x, y, value, color, scale, None)
 }
 fn text_with_font<T: sdl2::render::RenderTarget>(
     canvas: &mut Canvas<T>,

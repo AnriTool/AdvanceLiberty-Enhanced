@@ -25,6 +25,8 @@ mod coverage;
 mod desktop;
 mod frame_capture;
 #[cfg(feature = "desktop")]
+mod game_menu;
+#[cfg(feature = "desktop")]
 mod gamepad;
 mod ground_projection;
 mod hud_layout;
@@ -189,6 +191,12 @@ fn coverage(native_dispatches: u64, misses: u64, rejected: u64) -> coverage::Cov
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let _original_menus = if let Some(index) = args.iter().position(|s| s == "--original-menus") {
+        args.remove(index);
+        true
+    } else {
+        false
+    };
     let language_path = if let Some(index) = args.iter().position(|s| s == "--language-pack") {
         if index + 1 >= args.len() {
             return Err("--language-pack requires FILE.json".into());
@@ -700,6 +708,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "desktop")]
     if let Some(ui) = desktop.as_mut() {
         ui.set_languages(language_choices);
+        if !_original_menus {
+            ui.set_menu_skin(&m.bus.rom)?;
+        }
     }
     #[cfg(feature = "desktop")]
     let texture_creator = desktop.as_ref().map(|ui| ui.texture_creator());
@@ -812,6 +823,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 match result {
                     Ok(()) => {
                         active_language_file = selected;
+                        if !_original_menus {
+                            ui.set_menu_skin(&m.bus.rom)?;
+                        }
                         eprintln!("Language applied live at frame {before}");
                     }
                     Err(error) => {
@@ -873,6 +887,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 let key = m.cpu.regs[15] | m.cpu.thumb() as u32;
+                #[cfg(feature = "desktop")]
+                if game_menu::Frontend::interested(key) {
+                    if let Some(ui) = desktop.as_mut() {
+                        ui.observe_game_menu(&m, key);
+                    }
+                }
                 if let Some(language) = language.as_mut() {
                     if key == 0x0802de67
                         || text_trace.is_some()
@@ -999,6 +1019,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = desktop.as_mut() {
             ui.set_preview_status(camera_preview.as_ref().map(|p| p.status()).unwrap_or(""));
             ui.set_render_settings(render_settings, preview_enabled);
+            if let Some(capture) = &capture {
+                capture.menu(m.bus.frames, ui)?;
+            }
             ui.present(&m.bus, preview_image.as_deref(), textures.as_mut().unwrap())?;
             ui.set_aim_projection(if preview_image.is_some() {
                 camera_preview.as_ref().and_then(|p| p.aim_projection())

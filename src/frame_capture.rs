@@ -1,4 +1,4 @@
-//! Read-only diagnostic screenshots of the original framebuffer.
+//! Read-only diagnostic screenshots of original, Enhanced and host menu output.
 use gba_core::Machine;
 use std::{
     collections::BTreeSet,
@@ -13,6 +13,18 @@ pub struct Capture {
 }
 
 impl Capture {
+    #[cfg(feature = "desktop")]
+    pub fn menu(&self, frame: u64, ui: &crate::desktop::Desktop) -> io::Result<()> {
+        if self.frames.contains(&frame) {
+            if let Some(pixels) = ui.menu_pixels().map_err(io::Error::other)? {
+                let mut file =
+                    fs::File::create_new(self.directory.join(format!("{frame:06}-menu.ppm")))?;
+                file.write_all(b"P6\n720 480\n255\n")?;
+                file.write_all(&pixels)?;
+            }
+        }
+        Ok(())
+    }
     pub fn open(directory: PathBuf, frames: BTreeSet<u64>) -> io::Result<Self> {
         fs::create_dir(&directory)?;
         Ok(Self { directory, frames })

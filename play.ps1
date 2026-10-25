@@ -7,6 +7,7 @@ param(
     [switch]$NoRecord,
     [string]$SessionDirectory,
     [switch]$OriginalRenderer,
+    [switch]$OriginalMenus,
     [switch]$AffineTextures,
     [uint64]$Frames = 0
 )
@@ -23,6 +24,7 @@ foreach ($path in @($SavePath, $ControlsPath)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
 }
 $runtimeOptions = @('--camera-preview')
+if ($OriginalMenus) { $runtimeOptions += '--original-menus' }
 if ($LanguagePack) { $runtimeOptions += @('--language-pack', (Resolve-Path -LiteralPath $LanguagePack).Path) }
 if ($OriginalRenderer) { $runtimeOptions += '--original-renderer' }
 if ($AffineTextures) { $runtimeOptions += '--affine-textures' }
@@ -35,6 +37,6 @@ if (!$NoRecord) {
 }
 Write-Host "Save: $SavePath"
 Write-Host "Controls: $ControlsPath"
-Write-Host 'Esc: Enhanced Options (settings / quit). F6: renderer; F8: controls; F11: fullscreen. Saved options are loaded on startup.'
+Write-Host 'Esc / Pause: game menu. Enhanced Options: PC settings. F6: renderer; F8: controls; F11: fullscreen.'
 & $exe $Rom '-' $Frames '-' play @libraries --save $SavePath --controls $ControlsPath @runtimeOptions
 if ($LASTEXITCODE -ne 0) { throw "Game exited with error $LASTEXITCODE." }

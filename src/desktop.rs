@@ -79,6 +79,8 @@ pub struct Desktop {
     paused: bool,
     focused: bool,
     menu: Option<crate::options::Menu>,
+    menu_skin: Option<std::sync::Arc<crate::game_menu::Skin>>,
+    game_menu: crate::game_menu::Frontend,
     release_input: bool,
     preferences_path: std::path::PathBuf,
     language: Option<String>,
@@ -246,6 +248,8 @@ impl Desktop {
             paused: false,
             focused: true,
             menu: None,
+            menu_skin: None,
+            game_menu: Default::default(),
             release_input: false,
             preferences_path,
             next_frame: Instant::now(),
@@ -259,6 +263,51 @@ impl Desktop {
 
     pub fn paused(&self) -> bool {
         self.paused || !self.focused || self.menu.is_some()
+    }
+    pub fn set_menu_skin(&mut self, rom: &[u8]) -> Result<(), String> {
+        self.menu_skin = Some(crate::game_menu::Skin::load(rom)?);
+        Ok(())
+    }
+    pub fn observe_game_menu(&mut self, machine: &gba_core::Machine, key: u32) {
+        self.game_menu.observe(machine, key);
+    }
+    pub fn menu_pixels(&self) -> Result<Option<Vec<u8>>, String> {
+        let Some(skin) = &self.menu_skin else {
+            return Ok(None);
+        };
+        if self.game_menu.view.is_none() {
+            return Ok(None);
+        }
+        let mut canvas =
+            sdl2::surface::Surface::new(720, 480, PixelFormatEnum::RGB24)?.into_canvas()?;
+        self.game_menu.draw(&mut canvas, skin)?;
+        let surface = canvas.into_surface();
+        Ok(Some(
+            surface
+                .without_lock()
+                .ok_or("Menu surface is locked")?
+                .to_vec(),
+        ))
+    }
+    fn open_options(&mut self, settings: crate::render_settings::Settings, quit: bool) {
+        self.game_menu.cancel_navigation();
+        let mut menu = crate::options::Menu::new(
+            self.controls.clone(),
+            crate::options::Preferences {
+                render: settings,
+                fullscreen: self.canvas.window().fullscreen_state()
+                    != sdl2::video::FullscreenType::Off,
+                language: self.language.clone(),
+            },
+        )
+        .with_languages(self.languages.clone());
+        menu.skin = self.menu_skin.clone();
+        if quit {
+            menu.request_quit();
+        }
+        self.menu = Some(menu);
+        self.language_scan = true;
+        self.title_initialized = false;
     }
     pub fn set_languages(&mut self, languages: Vec<crate::localization::Choice>) {
         if self
@@ -371,6 +420,65 @@ impl Desktop {
             if self.release_input {
                 continue;
             }
+            if self.menu_skin.is_some()
+                && self.game_menu.view.is_some()
+                && !matches!(
+                    event,
+                    Event::KeyDown {
+                        keycode: Some(
+                            Keycode::P | Keycode::F5 | Keycode::F6 | Keycode::F8 | Keycode::F11
+                        ),
+                        ..
+                    } | Event::ControllerDeviceAdded { .. }
+                        | Event::ControllerDeviceRemoved { .. }
+                )
+            {
+                if self.focused {
+                    match self.game_menu.event(&event) {
+                        crate::game_menu::Action::Options => self.open_options(*settings, false),
+                        crate::game_menu::Action::Quit => self.open_options(*settings, true),
+                        crate::game_menu::Action::None => {}
+                    }
+                }
+                continue;
+            }
+            if self.menu_skin.is_some()
+                && self.game_menu.modal
+                && matches!(
+                    event,
+                    Event::KeyDown {
+                        keycode: Some(Keycode::Escape | Keycode::Return | Keycode::KpEnter),
+                        repeat: false,
+                        ..
+                    } | Event::ControllerButtonDown {
+                        button: sdl2::controller::Button::B
+                            | sdl2::controller::Button::Start
+                            | sdl2::controller::Button::Guide,
+                        ..
+                    }
+                )
+            {
+                self.game_menu.press(1);
+                continue;
+            }
+            if self.menu_skin.is_some() && context == crate::control_context::Context::Menu {
+                if let Event::KeyDown {
+                    keycode: Some(key),
+                    repeat: false,
+                    ..
+                } = event
+                {
+                    let mask = match key {
+                        Keycode::Return | Keycode::KpEnter => Some(1),
+                        Keycode::Escape | Keycode::Backspace => Some(2),
+                        _ => None,
+                    };
+                    if let Some(mask) = mask {
+                        self.game_menu.press(mask);
+                        continue;
+                    }
+                }
+            }
             if matches!(
                 event,
                 Event::KeyDown {
@@ -382,20 +490,14 @@ impl Desktop {
                     ..
                 }
             ) {
-                self.menu = Some(
-                    crate::options::Menu::new(
-                        self.controls.clone(),
-                        crate::options::Preferences {
-                            render: *settings,
-                            fullscreen: self.canvas.window().fullscreen_state()
-                                != sdl2::video::FullscreenType::Off,
-                            language: self.language.clone(),
-                        },
-                    )
-                    .with_languages(self.languages.clone()),
-                );
-                self.language_scan = true;
-                self.title_initialized = false;
+                if self.menu_skin.is_some()
+                    && !self.paused
+                    && context != crate::control_context::Context::Menu
+                {
+                    self.game_menu.press(8);
+                } else {
+                    self.open_options(*settings, false);
+                }
                 continue;
             }
             match event {
@@ -496,11 +598,20 @@ impl Desktop {
             std::thread::sleep(Duration::from_millis(10));
             return Ok(Some(0x3ff));
         }
+        if self.menu_skin.is_some() && (self.game_menu.view.is_some() || self.game_menu.busy()) {
+            self.update_aim_pointer(false);
+            let busy = self.game_menu.busy();
+            let keys = self.game_menu.input();
+            if busy && !self.game_menu.busy() {
+                self.release_input = true;
+            }
+            return Ok(Some(keys));
+        }
         if releasing_input {
             self.update_aim_pointer(false);
             return Ok(Some(0x3ff));
         }
-        let keyboard_buttons =
+        let mut keyboard_buttons =
             self.input_latch
                 .sample(&self.controls, context, |binding| match binding {
                     crate::controls::Binding::Key(key) => keyboard.is_scancode_pressed(key),
@@ -508,6 +619,9 @@ impl Desktop {
                     crate::controls::Binding::MouseMiddle => mouse.middle(),
                     crate::controls::Binding::MouseRight => mouse.right(),
                 });
+        if self.menu_skin.is_some() && context == crate::control_context::Context::Menu {
+            keyboard_buttons |= 8; // Enter confirms fallback pages; never also send Start.
+        }
         if !self.paused()
             && !releasing_input
             && self.input_latch.aiming(&self.controls, context)
@@ -542,10 +656,14 @@ impl Desktop {
                 && p[0] < self.frame_size.0 as f64
                 && p[1] < self.frame_size.1 as f64
         }));
-        Ok(Some(crate::gamepad::merge(
+        let mut buttons = crate::gamepad::merge(
             keyboard_buttons,
             self.gamepad.as_ref().map_or(0x3ff, |pad| pad.buttons()),
-        )))
+        );
+        if self.menu_skin.is_some() && self.game_menu.modal {
+            buttons |= 8;
+        }
+        Ok(Some(buttons))
     }
 
     pub fn initial_render_settings(&self) -> crate::render_settings::Settings {
@@ -670,36 +788,63 @@ impl Desktop {
         textures: &mut Textures<'_>,
     ) -> Result<(), String> {
         let start = Instant::now();
-        let frame = preview.unwrap_or(&source.framebuffer);
-        let (width, height) = if preview.is_some() {
-            let width = frame.len() / 480;
-            if ![720, 854].contains(&width) || frame.len() != width * 480 {
-                return Err("Invalid Enhanced frame size".into());
+        let custom_menu = self.game_menu.view.is_some() && self.menu_skin.is_some();
+        if custom_menu {
+            if let Some(skin) = &self.menu_skin {
+                let mut surface =
+                    sdl2::surface::Surface::new(720, 480, PixelFormatEnum::RGB24)?.into_canvas()?;
+                self.game_menu.draw(&mut surface, skin)?;
+                let surface = surface.into_surface();
+                let texture = textures.menu()?;
+                texture
+                    .update(
+                        None,
+                        surface.without_lock().ok_or("Menu surface is locked")?,
+                        surface.pitch() as usize,
+                    )
+                    .map_err(|e| e.to_string())?;
+                self.canvas
+                    .set_logical_size(720, 480)
+                    .map_err(|e| e.to_string())?;
+                self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
+                self.canvas.clear();
+                self.canvas.copy(texture, None, None)?;
+                self.canvas.present();
+                self.frame_size = (720, 480);
+                // Keep the normal frame pacing/audio bookkeeping below.
             }
-            (width as u32, 480u32)
-        } else {
-            (240, 160)
-        };
-        self.frame_size = (width, height);
-        let samples = &source.audio_buf;
-        if self.canvas.logical_size() != (width, height) {
-            self.canvas
-                .set_logical_size(width, height)
+        }
+        if !custom_menu {
+            let frame = preview.unwrap_or(&source.framebuffer);
+            let (width, height) = if preview.is_some() {
+                let width = frame.len() / 480;
+                if ![720, 854].contains(&width) || frame.len() != width * 480 {
+                    return Err("Invalid Enhanced frame size".into());
+                }
+                (width as u32, 480u32)
+            } else {
+                (240, 160)
+            };
+            self.frame_size = (width, height);
+            if self.canvas.logical_size() != (width, height) {
+                self.canvas
+                    .set_logical_size(width, height)
+                    .map_err(|e| e.to_string())?;
+            }
+            self.pixels.resize(width as usize * height as usize * 3, 0);
+            for (out, &pixel) in self.pixels.chunks_exact_mut(3).zip(frame) {
+                out.copy_from_slice(&rgb(pixel));
+            }
+            let pixels = self.pixels.as_slice();
+            let texture = textures.sized(width, height)?;
+            texture
+                .update(None, pixels, width as usize * 3)
                 .map_err(|e| e.to_string())?;
+            self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
+            self.canvas.clear();
+            self.canvas.copy(texture, None, None)?;
+            self.canvas.present();
         }
-        self.pixels.resize(width as usize * height as usize * 3, 0);
-        for (out, &pixel) in self.pixels.chunks_exact_mut(3).zip(frame) {
-            out.copy_from_slice(&rgb(pixel));
-        }
-        let pixels = self.pixels.as_slice();
-        let texture = textures.sized(width, height)?;
-        texture
-            .update(None, pixels, width as usize * 3)
-            .map_err(|e| e.to_string())?;
-        self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
-        self.canvas.clear();
-        self.canvas.copy(texture, None, None)?;
-        self.canvas.present();
         self.present_frames += 1;
         self.present_ns += start.elapsed().as_nanos();
         {
@@ -708,7 +853,11 @@ impl Desktop {
                 if audio.size() > 65536 / 5 * 4 {
                     audio.clear();
                 }
-                audio.queue_audio(samples)?;
+                if self.menu_skin.is_some() && self.game_menu.mute_navigation_audio() {
+                    audio.clear();
+                } else {
+                    audio.queue_audio(&source.audio_buf)?;
+                }
             }
             self.next_frame += FRAME_TIME;
             let now = Instant::now();
@@ -731,6 +880,111 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires USA ROM and isolated SDL event queue"]
+    fn native_menu_frontend_real_sdl() {
+        use super::*;
+        let directory = std::env::var_os("GTA_MENU_TEST_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("native-menu-{}", std::process::id()))
+            });
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("controls.cfg");
+        std::fs::write(&path, crate::controls::Controls::default_file()).unwrap();
+        let rom = std::fs::read("roms/usa.gba").unwrap();
+        let mut machine = gba_core::Machine::new(rom);
+        machine.cpu.regs[0] = crate::game_menu::ROOT;
+        let mut ui = Desktop::new(path).unwrap();
+        ui.set_menu_skin(&machine.bus.rom).unwrap();
+        ui.observe_game_menu(&machine, 0x080011ed);
+        let cpu = machine.cpu.clone();
+        let ram = machine.bus.ewram.clone();
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let pixels = ui.menu_pixels().unwrap().unwrap();
+        let mut ppm = b"P6\n720 480\n255\n".to_vec();
+        ppm.extend(pixels);
+        std::fs::write(directory.join("pause.ppm"), ppm).unwrap();
+        ui.present(&machine.bus, None, &mut textures).unwrap();
+        assert_eq!(ui.canvas.logical_size(), (720, 480));
+        let events = ui._sdl.event().unwrap();
+        let mut settings = crate::render_settings::Settings::default();
+        let send = |ui: &mut Desktop, settings: &mut crate::render_settings::Settings, key| {
+            events
+                .push_event(Event::KeyDown {
+                    timestamp: 0,
+                    window_id: ui.canvas.window().id(),
+                    keycode: Some(key),
+                    scancode: None,
+                    keymod: sdl2::keyboard::Mod::NOMOD,
+                    repeat: false,
+                })
+                .unwrap();
+            ui.poll(settings, true, crate::control_context::Context::Menu)
+                .unwrap()
+                .unwrap()
+        };
+        for _ in 0..6 {
+            assert!(matches!(
+                send(&mut ui, &mut settings, Keycode::Down),
+                0x3ff | 0x37f
+            ));
+        }
+        send(&mut ui, &mut settings, Keycode::Return);
+        assert!(ui.paused());
+        assert!(ui.menu.is_some());
+        ui.present_paused(&mut textures).unwrap();
+        ui.menu
+            .as_mut()
+            .unwrap()
+            .draw(&mut ui.canvas, textures.menu().unwrap())
+            .unwrap();
+        // Capture the actual cached menu pixels uploaded by Menu::draw.
+        let pixels = ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+        let (w, h) = ui.canvas.output_size().unwrap();
+        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+        ppm.extend(pixels);
+        std::fs::write(directory.join("enhanced.ppm"), ppm).unwrap();
+        let previous = ui.controls.mode();
+        send(&mut ui, &mut settings, Keycode::Return); // draft mode
+        send(&mut ui, &mut settings, Keycode::Escape); // discard back to pause
+        assert!(ui.menu.is_none());
+        assert_eq!(ui.controls.mode(), previous);
+        assert!(ui.game_menu.view.is_some());
+        // Clear the close latch, then route an original Options action.
+        ui.release_input = false;
+        ui.game_menu.row = 1;
+        let keys = send(&mut ui, &mut settings, Keycode::Return);
+        assert_eq!(keys, 0x37f);
+        machine.cpu.regs[1] = 1;
+        ui.observe_game_menu(&machine, 0x080011ed);
+        let mut confirmed = false;
+        for _ in 0..30 {
+            let keys = ui
+                .poll(&mut settings, true, crate::control_context::Context::Menu)
+                .unwrap()
+                .unwrap();
+            if keys == 0x3fe {
+                confirmed = true;
+                break;
+            }
+        }
+        assert!(confirmed);
+        assert_eq!(machine.bus.ewram, ram);
+        machine.cpu.regs[1] = 0;
+        assert!(machine.cpu == cpu);
+        // Fallback pages use the same logical confirmation/back controls even
+        // when the user's classic A/B are Z/X. Enter must not also send Start.
+        ui.game_menu.cancel_navigation();
+        ui.observe_game_menu(&machine, 0x080013ad);
+        ui.release_input = false;
+        assert_eq!(send(&mut ui, &mut settings, Keycode::Return), 0x3fe);
+        ui.game_menu.cancel_navigation();
+        ui.release_input = false;
+        assert_eq!(send(&mut ui, &mut settings, Keycode::Escape), 0x3fd);
+        assert!(ui.menu.is_none());
+    }
     #[test]
     #[ignore = "requires isolated SDL event queue"]
     fn language_options_real_sdl() {
