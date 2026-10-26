@@ -1,0 +1,36 @@
+AdvanceLiberty: Enhanced — licensing scope and attribution
+
+Original contributions to this project's source code and documentation are
+Copyright (c) 2026 AdvanceLiberty contributors, licensed under the MIT License
+in LICENSE, except where a file carries a different existing notice.
+
+This grant does not grant rights to the original game, its ROM/BIOS/assets,
+game-derived translations, instruction bytes in native coverage data, or
+ROM-derived generated native outputs. Supplying or accepting a ROM is not a
+grant of rights to that game. Private saves, ROMs and recordings are not part
+of the project's open-source license grant.
+
+Third-party code keeps its original copyright notices and license terms.
+This project's MIT license does not replace or relicense those components.
+
+gba-recomp
+  https://github.com/JRickey/gba-recomp
+  Base revision: de4edf59b872d887046d6a3b005e2df551b6d44c
+  Copyright (c) 2026 JRickey
+  MIT OR Apache-2.0
+  Adapted ARM/GBA hardware-model and recompilation components are in vendor/.
+  Enhanced Output DSP in src/enhanced_audio.rs is also adapted from upstream.
+  Original texts remain in vendor/LICENSE-MIT and vendor/LICENSE-APACHE.
+  Local modifications are described in vendor/README.md and source comments.
+
+SDL2
+  https://www.libsdl.org/
+  zlib license; the Rust SDL2 binding retains its own MIT notice.
+  Used for windowing, input and audio. Packaging includes SDL's license text.
+
+Other dependencies
+  Cargo.lock pins versions; package manifests declare their license terms.
+  Packaged releases include licenses/dependencies.json and available original
+  license/copyright/notice files. That list may include build-only components.
+  Upstream vendor/THIRD-PARTY.md is retained as provenance and can describe
+  upstream assets not bundled by AdvanceLiberty.

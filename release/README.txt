@@ -56,3 +56,7 @@ EXE OPTIONS
 Native libraries must remain in native/usa. Do not mix libraries from different
 versions or run two instances using the same save. Third-party license texts
 and notices are in licenses.
+
+Original project code is MIT-licensed; see LICENSE and NOTICE in this folder.
+Third-party components keep their original terms. The grant does not cover
+the original game or ROM-derived content.

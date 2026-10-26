@@ -53,6 +53,12 @@ tools. Documentation uses matching `docs/en/` and `docs/ru/` trees.
 
 ## Commands
 
+Source builds require Rust/Cargo, MSVC Build Tools with the Windows SDK, and
+CMake. SDL is built automatically and linked statically. The first build needs
+access to Cargo dependencies; use `-Offline` only with a populated local cache.
+Rebuilding native profiles additionally requires MinGW x64 GCC, separately
+from Rust's MSVC toolchain. No separate gba-recomp checkout or patch step is needed.
+
 ```powershell
 ./build.ps1 -Offline -Tools
 ./test.ps1 -Offline -Sdl

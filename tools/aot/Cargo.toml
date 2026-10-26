@@ -3,6 +3,7 @@ name = "advance-aot-supplement"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license = "MIT"
 default-run = "advance-aot-supplement"
 
 [dependencies]

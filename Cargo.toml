@@ -3,6 +3,7 @@ name = "advance-liberty"
 version = "0.1.0-preview.2"
 edition = "2021"
 publish = false
+license = "MIT"
 default-run = "AdvanceLiberty"
 
 [[bin]]

@@ -27,6 +27,8 @@ $jsonPath = Join-Path $OutputDirectory 'native/usa/manifest.json'
 [IO.File]::WriteAllText($jsonPath, ([IO.File]::ReadAllText($jsonPath)), (New-Object Text.UTF8Encoding($false)))
 Copy-Item (Join-Path $ProjectRoot 'release/README.txt') (Join-Path $OutputDirectory 'README.txt')
 Copy-Item (Join-Path $ProjectRoot 'release/README.ru.txt') (Join-Path $OutputDirectory 'README.ru.txt')
+Copy-Item (Join-Path $ProjectRoot 'LICENSE') (Join-Path $OutputDirectory 'LICENSE')
+Copy-Item (Join-Path $ProjectRoot 'NOTICE') (Join-Path $OutputDirectory 'NOTICE')
 Copy-Item (Join-Path $ProjectRoot 'release/THIRD_PARTY_NOTICES.txt') (Join-Path $OutputDirectory 'licenses/THIRD_PARTY_NOTICES.txt')
 Copy-Item (Join-Path $ProjectRoot 'vendor/LICENSE-MIT') (Join-Path $OutputDirectory 'licenses/gba-recomp-MIT.txt')
 Copy-Item (Join-Path $ProjectRoot 'vendor/LICENSE-APACHE') (Join-Path $OutputDirectory 'licenses/gba-recomp-APACHE.txt')

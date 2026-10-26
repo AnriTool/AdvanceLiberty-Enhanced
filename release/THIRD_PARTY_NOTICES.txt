@@ -1,5 +1,9 @@
 AdvanceLiberty: Enhanced — component notices
 
+Original project code is licensed under MIT; see LICENSE and NOTICE in the
+release root for the grant, scope and attribution. Third-party licenses are
+retained separately and are not replaced by that grant.
+
 This is an unofficial native runtime. It does not include a cartridge ROM,
 BIOS, user saves, or extracted game images, music, fonts or story text.
 Original game rights remain with their respective owners. The native

@@ -19,6 +19,8 @@ European and modified ROMs are rejected.
 AdvanceLiberty.exe
 README.txt
 README.ru.txt
+LICENSE
+NOTICE
 release.json
 native/usa/manifest.json
 native/usa/{precise,extra,mission,sessions}.dll

@@ -53,6 +53,12 @@ sessions. Для каждого хранится накопленный CSV в `
 
 ## Команды
 
+Для сборки нужны Rust/Cargo, MSVC Build Tools с Windows SDK и CMake.
+SDL собирается автоматически и связывается статически. Для первой сборки
+нужен доступ к зависимостям Cargo; `-Offline` используйте с заполненным кэшем.
+Для пересборки нативных профилей дополнительно нужен MinGW x64 GCC,
+отдельно от MSVC для Rust. Внешняя копия gba-recomp и применение patch не нужны.
+
 ```powershell
 ./build.ps1 -Offline -Tools
 ./test.ps1 -Offline -Sdl
