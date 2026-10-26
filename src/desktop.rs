@@ -298,7 +298,7 @@ impl Desktop {
         }
         Ok(())
     }
-    fn play_menu_click(&mut self) {
+    pub(crate) fn play_menu_click(&mut self) {
         if let (Some(audio), Some(click)) = (&mut self.audio, &self.menu_click) {
             audio.click(click.clone(), self.sfx_volume);
         }

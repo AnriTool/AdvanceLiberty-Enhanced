@@ -944,6 +944,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if args[1] == "-" {
                 for _ in 0..cycles {
                     if let Some(mode) = camera_mode::cycle(&mut m.bus) {
+                        ui.play_menu_click();
                         if let Some(recording) = recording.as_mut() {
                             recording.camera_change(before, mode)?;
                         }
