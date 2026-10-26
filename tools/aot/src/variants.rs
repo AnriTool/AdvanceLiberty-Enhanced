@@ -6,6 +6,16 @@ use recomp_core::{
 use std::{collections::BTreeMap, fmt::Write};
 
 pub fn generate(audit: &str, rom: &[u8]) -> Result<(String, usize, usize), String> {
+    generate_inner(audit, Some(rom))
+}
+
+/// CI already has instruction snapshots in versioned coverage. No game image,
+/// literal pool, assets or synthetic ROM is needed by the one-instruction emitter.
+pub fn generate_from_coverage(audit: &str) -> Result<(String, usize, usize), String> {
+    generate_inner(audit, None)
+}
+
+fn generate_inner(audit: &str, rom: Option<&[u8]>) -> Result<(String, usize, usize), String> {
     let mut lines = audit.lines();
     if lines.next() != Some("reason,key,steps,first_frame,last_frame,bytes32") {
         return Err("Unexpected audit header".into());
@@ -43,6 +53,29 @@ pub fn generate(audit: &str, rom: &[u8]) -> Result<(String, usize, usize), Strin
     let mut skipped = 0;
     let mut ewram = vec![0u8; 0x40000];
     let mut iwram = vec![0u8; 0x8000];
+    // Unlike RAM, ROM cannot have different versions or disagreeing ARM/Thumb
+    // snapshots that overlap. Validate this even when no ROM is supplied.
+    let mut rom_bytes = BTreeMap::new();
+    for (&key, words) in &entries {
+        if key >> 24 != 8 {
+            continue;
+        }
+        let addr = key & !1;
+        let size = if key & 1 != 0 { 2 } else { 4 };
+        if addr - 0x08000000 > 0x1000000 - size {
+            return Err("Instruction outside USA ROM".into());
+        }
+        for &word in words.keys() {
+            for (i, &byte) in word.to_le_bytes()[..size as usize].iter().enumerate() {
+                if rom_bytes
+                    .insert(addr + i as u32, byte)
+                    .is_some_and(|old| old != byte)
+                {
+                    return Err("Conflicting ROM instruction snapshots".into());
+                }
+            }
+        }
+    }
     for (key, words) in entries {
         let mut words: Vec<_> = words.into_iter().collect();
         words.sort_by_key(|&(word, count)| (std::cmp::Reverse(count), word));
@@ -60,7 +93,7 @@ pub fn generate(audit: &str, rom: &[u8]) -> Result<(String, usize, usize), Strin
                 ram.get_mut(offset..offset + size)
                     .ok_or("RAM boundary")?
                     .copy_from_slice(&word.to_le_bytes()[..size]);
-            } else {
+            } else if let Some(rom) = rom {
                 let bytes = rom
                     .get((addr as usize & 0x1ffffff)..)
                     .ok_or("ROM boundary")?;
@@ -74,7 +107,7 @@ pub fn generate(audit: &str, rom: &[u8]) -> Result<(String, usize, usize), Strin
                 armv4t::decode_arm(word, addr)
             };
             let view = View {
-                rom,
+                rom: rom.unwrap_or(&[]),
                 ewram: Some(&ewram),
                 iwram: Some(&iwram),
                 bios: None,
@@ -139,6 +172,25 @@ pub fn generate(audit: &str, rom: &[u8]) -> Result<(String, usize, usize), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coverage_only_matches_rom_generation_and_rejects_conflicting_snapshots() {
+        let header = "reason,key,steps,first_frame,last_frame,bytes32\n";
+        let audit =
+            format!("{header}dispatch,08000000,1,0,0,0100a0e3\ndispatch,03000001,1,0,0,0120\n");
+        let rom = 0xe3a00001u32.to_le_bytes();
+        assert_eq!(
+            generate(&audit, &rom).unwrap(),
+            generate_from_coverage(&audit).unwrap()
+        );
+        assert!(generate(&audit, &[0; 4]).is_err());
+        let conflict = format!("{audit}dispatch,08000001,1,0,0,0200\n");
+        assert!(generate_from_coverage(&conflict)
+            .unwrap_err()
+            .contains("Conflicting"));
+        let outside =
+            format!("{header}dispatch,08fffffe,1,0,0,0120\ndispatch,08ffffff,1,0,0,0120\n");
+        assert!(generate_from_coverage(&outside).is_err());
+    }
     #[test]
     fn retains_two_guarded_versions_and_deduplicates_same_instruction() {
         let input = "reason,key,steps,first_frame,last_frame,bytes32\ndispatch,03000000,1,0,0,0100a0e3\nguard,03000000,5,0,0,0200a0e3\ninternal,03000000,2,0,0,0100a0e300000000\n";

@@ -5,14 +5,15 @@ param(
     [string]$OutputDirectory,
     [string[]]$VerifySession,
     [switch]$SkipBuild,
+    [switch]$CoverageOnly,
     [switch]$Install
 )
 . (Join-Path $PSScriptRoot 'Project.ps1')
 . (Join-Path $PSScriptRoot 'Native.ps1')
-$Rom = Get-GameRom $Rom
+if (!$CoverageOnly -or $VerifySession) { $Rom = Get-GameRom $Rom }
 $manifestPath = Join-Path $ProjectRoot 'native/usa/manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ((Get-FileHash -LiteralPath $Rom).Hash.ToLowerInvariant() -ne $manifest.rom_sha256) { throw 'Native profiles require the verified USA ROM.' }
+if ((!$CoverageOnly -or $VerifySession) -and (Get-FileHash -LiteralPath $Rom).Hash.ToLowerInvariant() -ne $manifest.rom_sha256) { throw 'Native profiles require the verified USA ROM.' }
 if (!$Gcc) {
     $command = Get-Command gcc -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath 'C:/msys64/mingw64/bin/gcc.exe') { $Gcc = 'C:/msys64/mingw64/bin/gcc.exe' }
@@ -35,7 +36,12 @@ $selected = @($manifest.libraries | Where-Object { $NativeProfile -eq 'all' -or 
 $variantCounts = @{}
 foreach ($entry in $selected) {
     $output = Join-Path $OutputDirectory ($entry.name + '.dll')
-    & $compiler (Join-Path $ProjectRoot $entry.coverage) $Rom $output $Gcc --ram-variants | Tee-Object -Variable nativeOutput
+    $generatorOptions = @((Join-Path $ProjectRoot $entry.coverage), $Rom, $output, $Gcc, '--ram-variants')
+    if ($CoverageOnly) {
+        $generatorOptions[1] = '-'
+        $generatorOptions += '--coverage-only'
+    }
+    & $compiler @generatorOptions | Tee-Object -Variable nativeOutput
     if ($LASTEXITCODE -ne 0) { throw "Native build failed: $($entry.name)" }
     $counts = [regex]::Match(($nativeOutput -join "`n"), 'RAM AOT supplement: (\d+) guarded instruction variants; (\d+) unsupported skipped')
     if (!$counts.Success -or $counts.Groups[2].Value -ne '0') { throw "Incomplete native profile: $($entry.name)" }

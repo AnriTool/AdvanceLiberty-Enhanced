@@ -47,9 +47,8 @@ the Cargo registry. `--offline` requires an already populated Linux Cargo cache.
 From the project root:
 
 ```sh
-bash build.sh                         # runtime and AOT tools; no ROM needed
+bash build.sh --native --coverage-only # runtime, tools and .so profiles; no ROM needed
 # Put your own unmodified USA ROM in roms/usa.gba, then:
-bash build.sh --native                # generate all four native .so profiles
 bash play.sh --skip-build             # development saves/settings in data/
 bash test.sh --offline
 bash package.sh --skip-build          # new folder and .tar.gz in dist/
@@ -101,7 +100,7 @@ newer distribution may not run on an older one. This is not a universal Linux
 binary or a musl build. Controller/audio/display behavior still needs testing on
 real Linux desktops, including X11 and Wayland.
 
-`.github/workflows/linux.yml` builds the runtime and runs unit, script and
-synthetic compiled-instruction tests on Ubuntu without a ROM. Full native-profile
-builds and game replays require a local user-supplied ROM and are not generated
-or distributed by public CI.
+`.github/workflows/build.yml` builds and tests both platforms, generates native profiles
+from versioned instruction snapshots without a ROM, and packages both releases.
+[CI and tag-based publication](RELEASING.md) describes artifacts and GitHub Releases.
+Gameplay replays still require your local user-supplied ROM.

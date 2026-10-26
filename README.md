@@ -66,3 +66,5 @@ This grant does not license the original game or ROM-derived content.
 [User and developer guides](docs/en/README.md) ·
 [Native coverage tools](docs/en/NATIVE_WORKFLOW.md) ·
 [Building a portable release](docs/en/PORTABLE.md)
+
+[CI builds and GitHub Releases](docs/en/RELEASING.md)

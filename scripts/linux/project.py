@@ -87,7 +87,7 @@ def native_libraries(check_coverage=True):
     return result
 
 
-def build_native(rom, force=False, cc=None):
+def build_native(rom, force=False, cc=None, coverage_only=False):
     if not force:
         try:
             return native_libraries()
@@ -109,7 +109,8 @@ def build_native(rom, force=False, cc=None):
         if not re.fullmatch(r'[a-z][a-z0-9_-]*', name):
             raise ValueError('Invalid native profile name.')
         output = stage / (name + '.so')
-        completed = run([generator, local_path(entry['coverage']), rom, output, compiler, '--ram-variants'], capture_output=True, text=True)
+        options = ['--ram-variants'] + (['--coverage-only'] if coverage_only else [])
+        completed = run([generator, local_path(entry['coverage']), '-' if coverage_only else rom, output, compiler, *options], capture_output=True, text=True)
         print(completed.stdout, end='', flush=True)
         if completed.stderr:
             print(completed.stderr, file=sys.stderr, end='')
@@ -139,7 +140,7 @@ def build(args):
     run(['cargo', 'build', '--release', '--locked', '--package', 'advance-liberty', '--bin', 'AdvanceLiberty', *flags])
     run(['cargo', 'build', '--release', '--locked', '--package', 'advance-aot-supplement', *flags])
     if args.native:
-        build_native(rom_path(args.rom), args.force, args.cc)
+        build_native(None if args.coverage_only else rom_path(args.rom), args.force, args.cc, args.coverage_only)
 
 
 def prepare(args):
@@ -344,11 +345,12 @@ def main():
         if name in ['play', 'replay', 'package', 'rebuild-native']:
             command.add_argument('--skip-build', action='store_true')
         if name in ['build', 'rebuild-native']:
+            command.add_argument('--coverage-only', action='store_true', help='generate native profiles from versioned instruction snapshots without a ROM')
             command.add_argument('--force', action='store_true')
             command.add_argument('--cc', help='host C compiler executable')
         if name in ['replay', 'package']:
             command.add_argument('--output')
-    commands.choices['build'].add_argument('--native', action='store_true', help='also compile Linux native profiles (requires ROM)')
+    commands.choices['build'].add_argument('--native', action='store_true', help='also compile Linux native profiles')
     play_parser = commands.choices['play']
     play_parser.add_argument('--no-record', action='store_true')
     play_parser.add_argument('--original-audio', action='store_true')
@@ -363,7 +365,7 @@ def main():
     if args.command == 'rebuild-native':
         if not args.skip_build:
             build(argparse.Namespace(offline=False, native=False))
-        build_native(rom_path(args.rom), force=True, cc=args.cc)
+        build_native(None if args.coverage_only else rom_path(args.rom), force=True, cc=args.cc, coverage_only=args.coverage_only)
     else:
         {'build': build, 'play': play, 'replay': replay, 'package': package, 'collect-native': collect}[args.command](args)
 

@@ -12,6 +12,8 @@ mod variants;
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let coverage_only = take_flag(&mut args, "--coverage-only");
+    let emit_only = take_flag(&mut args, "--emit-only");
     let ram_variants = if let Some(i) = args.iter().position(|a| a == "--ram-variants") {
         args.remove(i);
         true
@@ -20,7 +22,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     if args.len() != 4 {
         return Err(
-            "Usage: advance-aot-supplement AUDIT.csv ROM OUTPUT_LIBRARY CC [--ram-variants]".into(),
+            "Usage: advance-aot-supplement AUDIT.csv ROM OUTPUT_LIBRARY CC [--ram-variants] [--coverage-only (ROM must be -)] [--emit-only]".into(),
         );
     }
     let output = PathBuf::from(&args[2]);
@@ -28,15 +30,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if output.exists() || source.exists() {
         return Err("Output library/C already exists; choose a new name".into());
     }
-    let rom = fs::read(&args[1])?;
-    if rom.len() != 0x1000000 || &rom[0xac..0xb0] != b"BGTE" {
+    if coverage_only && (!ram_variants || args[1] != "-") {
+        return Err("--coverage-only requires --ram-variants and ROM argument -".into());
+    }
+    let rom = if coverage_only {
+        Vec::new()
+    } else {
+        fs::read(&args[1])?
+    };
+    if !coverage_only && (rom.len() != 0x1000000 || &rom[0xac..0xb0] != b"BGTE") {
         return Err("Expected the supported unmodified USA ROM".into());
     }
     let audit = fs::read_to_string(&args[0])?;
     if ram_variants {
-        let (code, count, skipped) = variants::generate(&audit, &rom)?;
+        let (code, count, skipped) = if coverage_only {
+            variants::generate_from_coverage(&audit)?
+        } else {
+            variants::generate(&audit, &rom)?
+        };
         fs::write(&source, code)?;
-        compile(&source, &output, &args[3])?;
+        if !emit_only {
+            compile(&source, &output, &args[3])?;
+        }
         println!("RAM AOT supplement: {count} guarded instruction variants; {skipped} unsupported skipped -> {}", output.display());
         return Ok(());
     }
@@ -108,13 +123,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     })?;
     fs::write(&source, c_source)?;
-    compile(&source, &output, &args[3])?;
+    if !emit_only {
+        compile(&source, &output, &args[3])?;
+    }
     println!(
         "AOT supplement: {} guarded EWRAM entries -> {}",
         entries.len(),
         output.display()
     );
     Ok(())
+}
+
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    if let Some(i) = args.iter().position(|a| a == flag) {
+        args.remove(i);
+        true
+    } else {
+        false
+    }
 }
 
 fn compile(
@@ -139,11 +165,7 @@ fn compile(
     // ELF shared objects require position-independent references to the registry.
     #[cfg(unix)]
     command.arg("-fPIC");
-    let status = command
-        .arg(source)
-        .arg("-o")
-        .arg(output)
-        .status()?;
+    let status = command.arg(source).arg("-o").arg(output).status()?;
     if !status.success() {
         return Err("C compilation failed".into());
     }

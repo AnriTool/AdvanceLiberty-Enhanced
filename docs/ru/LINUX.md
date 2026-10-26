@@ -48,9 +48,8 @@ sudo apt-get install build-essential cmake pkg-config python3 \
 Из корня проекта:
 
 ```sh
-bash build.sh                         # программа и AOT-инструменты, ROM не нужен
+bash build.sh --native --coverage-only # программа, инструменты и .so без ROM
 # Положите свой неизменённый USA ROM в roms/usa.gba, затем:
-bash build.sh --native                # собрать четыре нативные .so
 bash play.sh --skip-build             # сохранения/настройки разработки в data/
 bash test.sh --offline
 bash package.sh --skip-build          # новая папка и .tar.gz в dist/
@@ -103,7 +102,7 @@ Windows и Linux используют общие CSV, но разные бина
 Linux-сборка и не musl. Управление, звук и отображение ещё нужно проверять
 на реальных рабочих столах Linux, включая X11 и Wayland.
 
-`.github/workflows/linux.yml` собирает программу и выполняет модульные проверки,
-проверки скриптов и скомпилированных синтетических инструкций в Ubuntu без ROM.
-Полная сборка игровых профилей и replay требуют локального ROM пользователя:
-публичный CI их не создаёт и не распространяет.
+`.github/workflows/build.yml` собирает и проверяет обе платформы, создаёт нативные
+профили из версионируемых снимков инструкций без ROM и упаковывает оба релиза.
+[Руководство CI и публикации по тегам](RELEASING.md) описывает артефакты и Releases.
+Для игрового replay по-прежнему нужен локальный ROM пользователя.

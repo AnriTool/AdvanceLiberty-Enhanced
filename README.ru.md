@@ -66,3 +66,5 @@ AdvanceLiberty: Enhanced — нативная оболочка для ПК, до
 [Инструкции и устройство проекта](docs/ru/README.md) ·
 [Инструменты нативного покрытия](docs/ru/NATIVE_WORKFLOW.md) ·
 [Сборка переносимой версии](docs/ru/PORTABLE.md)
+
+[CI-сборки и GitHub Releases](docs/ru/RELEASING.md)

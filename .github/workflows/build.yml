@@ -1,0 +1,112 @@
+name: Build and release
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate release version
+        run: python scripts/ci/release.py check-version
+      - name: Install Linux SDL build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config python3 libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxinerama-dev libgl1-mesa-dev libudev-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+      - name: Set up MinGW x64
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+      - name: Build Windows runtime and tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows/build.ps1 -Tools
+      - name: Test Windows runtime and scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          ./scripts/windows/test.ps1 -Offline
+          python -m unittest discover -s scripts/tests -v
+          if ($LASTEXITCODE) { throw 'Script tests failed.' }
+          $env:ADVANCE_AOT_TEST_GCC = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe'
+          cargo test --release --locked --offline --package advance-aot-supplement compiled_pc_and_shift_operations_match_oracle -- --ignored
+          if ($LASTEXITCODE) { throw 'Compiled-instruction tests failed.' }
+      - name: Build Windows native profiles without a ROM and package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $gcc = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe'
+          ./scripts/windows/rebuild-native.ps1 -NativeProfile all -CoverageOnly -SkipBuild -Install -Gcc $gcc
+          ./scripts/windows/package.ps1 -SkipBuild
+      - name: Check Linux shell entry points
+        if: runner.os == 'Linux'
+        run: for script in ./*.sh scripts/linux/*.sh; do bash -n "$script"; done
+      - name: Build Linux runtime and native profiles without a ROM
+        if: runner.os == 'Linux'
+        run: bash ./build.sh --native --coverage-only
+      - name: Test Linux runtime, scripts and compiled instructions
+        if: runner.os == 'Linux'
+        run: bash ./test.sh --offline
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: bash ./package.sh --skip-build
+      - name: Upload packaged builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download both tested platform packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish archives and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/release.py publish --directory release-assets
