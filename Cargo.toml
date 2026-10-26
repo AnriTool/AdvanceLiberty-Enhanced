@@ -1,9 +1,13 @@
 [package]
-name = "gta-advance"
-version = "0.1.0"
+name = "advance-liberty"
+version = "0.1.0-preview.1"
 edition = "2021"
 publish = false
-default-run = "gta-advance"
+default-run = "AdvanceLiberty"
+
+[[bin]]
+name = "AdvanceLiberty"
+path = "src/main.rs"
 
 [workspace]
 resolver = "2"

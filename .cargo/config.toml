@@ -3,6 +3,10 @@
 # A single job also bounds SDL's CMake build, which finishes without old caches.
 jobs = 1
 
+[target.x86_64-pc-windows-msvc]
+# Portable releases do not require a separate Visual C++ runtime install.
+rustflags = ["-C", "target-feature=+crt-static"]
+
 # SDL2's bundled CMake project predates CMake 4. Keep its supported policy floor.
 [env]
 CMAKE_POLICY_VERSION_MINIMUM = { value = "3.5", force = false }

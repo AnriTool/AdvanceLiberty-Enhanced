@@ -1,0 +1,20 @@
+AdvanceLiberty: Enhanced — component notices
+
+This is an unofficial native runtime. It does not include a cartridge ROM,
+BIOS, user saves, or extracted game images, music, fonts or story text.
+Original game rights remain with their respective owners. The native
+profiles contain ahead-of-time translated instruction implementations;
+they require the exact user-supplied cartridge identified by the manifest.
+These notices do not grant rights to the original game.
+
+Hardware/runtime and recompilation components are adapted from:
+https://github.com/JRickey/gba-recomp
+Base revision: de4edf59b872d887046d6a3b005e2df551b6d44c
+Copyright (c) 2026 JRickey. MIT / Apache-2.0.
+Enhanced Output DSP is also adapted from this project.
+The corresponding license texts are included in this directory.
+
+SDL2 provides window, input and audio output, under the zlib license.
+Rust dependencies and their declared licenses are listed in dependencies.json.
+Available license, copyright and notice files are copied beside that list.
+Build-only dependencies may be listed as well.

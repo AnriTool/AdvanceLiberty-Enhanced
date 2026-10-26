@@ -131,7 +131,7 @@ impl Windows {
             vertical: [half(io, 0x44), half(io, 0x46)],
             inside: [inside & 0x3f, (inside >> 8) & 0x3f],
             outside: half(io, 0x4a) & 0x3f,
-            // GTA USA bridge reveal: the same layers on either side,
+            // USA bridge reveal: the same layers on either side,
             // with color effects disabled on the bridge deck region.
             world_bridge: half(io, 0) & 0x6000 == 0x2000
                 && inside & 0x3f == 0x17

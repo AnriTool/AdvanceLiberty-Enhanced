@@ -54,4 +54,4 @@ object_projection.rs использует их при композиции BG1 �
 Ручной тест захваченных сцен запускается отдельно, в новый выходной каталог:
 ADVANCE_HUD_SCENES указывает на каталог дампов 001675..003450,
 ADVANCE_HUD_OUTPUT — на новый каталог изображений;
-cargo test --release --package gta-advance hud_captured_composition -- --ignored --nocapture.
+cargo test --release --package advance-liberty --bin AdvanceLiberty hud_captured_composition -- --ignored --nocapture.

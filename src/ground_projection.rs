@@ -572,7 +572,7 @@ mod tests {
     #[test]
     #[ignore = "requires USA ROM and captured three-island session"]
     fn island_ground_matches_resident_cache_in_all_three_regions() {
-        let directory = std::path::PathBuf::from(std::env::var_os("GTA_ISLAND_TEST_DIR").unwrap())
+        let directory = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_ISLAND_TEST_DIR").unwrap())
             .join("capture");
         let rom = std::sync::Arc::new(std::fs::read("roms/usa.gba").unwrap());
         let mut regions = std::collections::BTreeSet::new();

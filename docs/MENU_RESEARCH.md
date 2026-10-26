@@ -37,7 +37,7 @@ Resume Game, ui.000c — Stats, ui.000d — Brief, ui.0231 — Camera.
 
 ## Шрифт и фон из USA ROM
 
-Пользователь указал `../HTMLS/GTA_Advance_Studio_1.3/` и Europe ROM.
+Пользователь указал `../HTMLS/ADVANCE_LIBERTY_Advance_Studio_1.3/` и Europe ROM.
 Изучены README, `js/tab_font.js`, `js/tab_menu.js`, графические модули Studio.
 README Studio предупреждает о фиксированных адресах Europe. У поиска мелкого
 шрифта опорный адрес 0x346828 относится именно к Europe; он не подходит как
@@ -315,7 +315,7 @@ record-menu.ps1 явно использует этот режим. `--capture-fr
 повторная пауза, Confirm Quit/отмена, Esc/повторная пауза и выход к старту).
 Новый `game_menu_native_tests.rs` выполняет переходы на initial.sav записи
 25df0205 в памяти, без записи пользовательского сохранения. Запуск локально:
-`cargo test --release --package gta-advance real_native_camera_roundtrip_resume_and_quit -- --ignored`.
+`cargo test --release --package advance-liberty --bin AdvanceLiberty real_native_camera_roundtrip_resume_and_quit -- --ignored`.
 SDL-тест отдельно проверяет Enter/Esc на fallback-страницах с обычными
 Classic A/B на Z/X; старые привязки и профили не переписываются.
 Итог: 129 runtime-тестов, тест AOT, пять SDL-проверок и отдельный native-прогон

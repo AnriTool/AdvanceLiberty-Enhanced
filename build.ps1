@@ -1,6 +1,6 @@
 param([switch]$Offline, [switch]$Tools)
 $ErrorActionPreference = 'Stop'
-$cargoOptions = @('build', '--release', '--locked', '--package', 'gta-advance', '--bin', 'gta-advance')
+$cargoOptions = @('build', '--release', '--locked', '--package', 'advance-liberty', '--bin', 'AdvanceLiberty')
 if ($Offline) { $cargoOptions += '--offline' }
 Push-Location $PSScriptRoot
 try {

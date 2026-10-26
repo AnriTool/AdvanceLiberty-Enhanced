@@ -175,7 +175,7 @@ impl Desktop {
         let window = sdl
             .video()?
             .window(
-                "AdvanceRecomp | Native dispatch: -- | interpreted: 0 | FPS: --",
+                "AdvanceLiberty: Enhanced | Native dispatch: -- | interpreted: 0 | FPS: --",
                 960,
                 if preferences.render.aspect == crate::viewport::Aspect::Wide {
                     540
@@ -1126,7 +1126,7 @@ mod tests {
     #[ignore = "requires USA ROM, isolated SDL driver and diagnostic directory"]
     fn island_menu_backgrounds_refresh_pause_and_cached_options() {
         use super::*;
-        let root = std::path::PathBuf::from(std::env::var_os("GTA_ISLAND_TEST_DIR").unwrap())
+        let root = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_ISLAND_TEST_DIR").unwrap())
             .join("menus");
         std::fs::create_dir_all(&root).unwrap();
         let rom = std::fs::read("roms/usa.gba").unwrap();
@@ -1179,7 +1179,7 @@ mod tests {
     fn cheat_panel_real_sdl() {
         use super::*;
         use sdl2::keyboard::Mod;
-        let root = std::path::PathBuf::from(std::env::var_os("GTA_CHEAT_TEST_DIR").unwrap());
+        let root = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_CHEAT_TEST_DIR").unwrap());
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("controls.cfg");
         std::fs::write(&path, crate::controls::Controls::default_file()).unwrap();
@@ -1245,7 +1245,7 @@ mod tests {
     #[ignore = "requires USA ROM and isolated SDL event queue"]
     fn localized_pause_and_settings_real_sdl() {
         use super::*;
-        let directory = std::env::var_os("GTA_MENU_TEST_DIR")
+        let directory = std::env::var_os("ADVANCE_LIBERTY_MENU_TEST_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::env::temp_dir().join(format!("menu-localized-{}", std::process::id()))
@@ -1302,7 +1302,7 @@ mod tests {
     #[ignore = "requires USA ROM and isolated SDL event queue"]
     fn native_menu_frontend_real_sdl() {
         use super::*;
-        let directory = std::env::var_os("GTA_MENU_TEST_DIR")
+        let directory = std::env::var_os("ADVANCE_LIBERTY_MENU_TEST_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::env::temp_dir().join(format!("native-menu-{}", std::process::id()))
@@ -1455,7 +1455,7 @@ mod tests {
     fn language_options_real_sdl() {
         use super::*;
         use crate::control_context::Context;
-        let directory = std::env::var_os("GTA_LANGUAGE_OPTIONS_TEST_DIR")
+        let directory = std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_OPTIONS_TEST_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::env::temp_dir().join(format!("language-options-{}", std::process::id()))
@@ -1671,7 +1671,7 @@ mod tests {
                 );
             };
         let capture = |ui: &Desktop, name: &str| {
-            if let Ok(dir) = std::env::var("GTA_OPTIONS_CAPTURE") {
+            if let Ok(dir) = std::env::var("ADVANCE_LIBERTY_OPTIONS_CAPTURE") {
                 let (w, h) = ui.canvas.output_size().unwrap();
                 let mut bytes = format!("P6\n{w} {h}\n255\n").into_bytes();
                 bytes.extend(ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap());
@@ -1870,7 +1870,7 @@ mod tests {
             send(&mut ui, &mut settings, Keycode::G);
             assert_eq!(ui.menu.as_ref().unwrap().controls.binding_text(1, 11), "G");
             ui.present_paused(&mut textures).unwrap();
-            if let Ok(dir) = std::env::var("GTA_OPTIONS_CAPTURE") {
+            if let Ok(dir) = std::env::var("ADVANCE_LIBERTY_OPTIONS_CAPTURE") {
                 let (w, h) = ui.canvas.output_size().unwrap();
                 let mut bytes = format!("P6\n{w} {h}\n255\n").into_bytes();
                 bytes.extend(ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap());

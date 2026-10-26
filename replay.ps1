@@ -26,7 +26,7 @@ Copy-Item -LiteralPath (Join-Path $Session 'initial.sav') -Destination $save
 $actual = Join-Path $OutputDirectory 'frames.csv'
 $options = @('--save', $save, '--audio-hashes', '--audit', (Join-Path $OutputDirectory 'fallbacks.csv'), '--camera-preview', '--preview-output', (Join-Path $OutputDirectory 'camera'))
 if (!$AllowInterpreter) { $options += '--require-native' }
-& $exe $Rom (Join-Path $Session 'input.gba-input') $summary.frames $actual multi @libraries @options
-if ($LASTEXITCODE -ne 0) { throw "Replay failed ($LASTEXITCODE); see $OutputDirectory" }
+$exitCode = Invoke-GameRuntime -Executable $exe -Arguments (@($Rom, (Join-Path $Session 'input.gba-input'), $summary.frames, $actual, 'multi') + @($libraries) + $options)
+if ($exitCode -ne 0) { throw "Replay failed ($exitCode); see $OutputDirectory" }
 if ((Get-FileHash -LiteralPath $actual).Hash -ne (Get-FileHash -LiteralPath (Join-Path $Session 'frames.csv')).Hash) { throw 'Recorded video/audio hashes differ.' }
 Write-Host "MATCH: $($summary.frames) recorded video/audio frames. Output: $OutputDirectory"

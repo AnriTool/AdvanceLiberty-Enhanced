@@ -58,9 +58,9 @@ foreach ($sessionPath in $VerifySession) {
         else { Join-Path $ProjectRoot $_.path }
     })
     Write-Host "Verifying $sessionPath ($($summary.frames) frames)..."
-    $exe = Join-Path $ProjectRoot 'target/release/gta-advance.exe'
-    & $exe $Rom (Join-Path $sessionPath 'input.gba-input') $summary.frames (Join-Path $replay 'frames.csv') multi @libraries --save (Join-Path $replay 'replay.sav') --audio-hashes --audit (Join-Path $replay 'fallbacks.csv') --require-native *> (Join-Path $replay 'runtime.log')
-    if ($LASTEXITCODE -ne 0) { throw "Native replay failed; active DLLs unchanged. See $replay" }
+    $exe = Join-Path $ProjectRoot 'target/release/AdvanceLiberty.exe'
+    $exitCode = Invoke-GameRuntime -Executable $exe -LogPath (Join-Path $replay 'runtime.log') -Arguments (@($Rom, (Join-Path $sessionPath 'input.gba-input'), $summary.frames, (Join-Path $replay 'frames.csv'), 'multi') + @($libraries) + @('--save', (Join-Path $replay 'replay.sav'), '--audio-hashes', '--audit', (Join-Path $replay 'fallbacks.csv'), '--require-native'))
+    if ($exitCode -ne 0) { throw "Native replay failed; active DLLs unchanged. See $replay" }
     if ((Get-FileHash -LiteralPath (Join-Path $replay 'frames.csv')).Hash -ne (Get-FileHash -LiteralPath (Join-Path $sessionPath 'frames.csv')).Hash) {
         throw "Video/audio hashes differ; active DLLs unchanged. See $replay"
     }

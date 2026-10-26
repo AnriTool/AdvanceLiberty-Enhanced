@@ -45,5 +45,5 @@ if (!$NoRecord) {
 Write-Host "Save: $SavePath"
 Write-Host "Controls: $ControlsPath"
 Write-Host 'Esc / Pause: game menu. Enhanced Options: PC settings. F6: renderer; F8: controls; F11: fullscreen.'
-& $exe $Rom '-' $Frames '-' play @libraries --save $SavePath --controls $ControlsPath @runtimeOptions
-if ($LASTEXITCODE -ne 0) { throw "Game exited with error $LASTEXITCODE." }
+$exitCode = Invoke-GameRuntime -Executable $exe -Arguments (@($Rom, '-', "$Frames", '-', 'play') + @($libraries) + @('--save', $SavePath, '--controls', $ControlsPath) + $runtimeOptions)
+if ($exitCode -ne 0) { throw "Game exited with error $exitCode." }

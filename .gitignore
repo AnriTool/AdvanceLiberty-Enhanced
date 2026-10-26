@@ -1,5 +1,6 @@
 /target/
 /artifacts/
+/dist/
 /data/
 /roms/*.gba
 /native/usa/*.dll

@@ -13,6 +13,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "advance-liberty"
+version = "0.1.0-preview.1"
+dependencies = [
+ "gba-core",
+ "libloading",
+ "sdl2",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "armv4t"
 version = "0.2.0"
 
@@ -135,18 +147,6 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
-]
-
-[[package]]
-name = "gta-advance"
-version = "0.1.0"
-dependencies = [
- "gba-core",
- "libloading",
- "sdl2",
- "serde",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

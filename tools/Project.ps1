@@ -19,9 +19,42 @@ function Get-NativeLibraries {
 }
 
 function Get-GameExecutable([switch]$SkipBuild) {
-    $exe = Join-Path $ProjectRoot 'target/release/gta-advance.exe'
+    $exe = Join-Path $ProjectRoot 'target/release/AdvanceLiberty.exe'
     if (!$SkipBuild -or !(Test-Path -LiteralPath $exe)) {
         & (Join-Path $ProjectRoot 'build.ps1') | Out-Host
     }
     $exe
+}
+
+# Windows PowerShell does not synchronously wait for GUI-subsystem programs
+# invoked with '&'. Keep developer tools synchronous and capture both streams
+# without treating ordinary Rust stderr as a terminating PowerShell error.
+function ConvertTo-WindowsArgument([AllowEmptyString()][string]$Value) {
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    '"' + $escaped + '"'
+}
+function Invoke-GameRuntime([string]$Executable, [string[]]$Arguments, [string]$LogPath) {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $Executable
+    $info.Arguments = ($Arguments | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $info
+    try {
+        if (!$process.Start()) { throw 'Cannot start runtime.' }
+        $output = $process.StandardOutput.ReadToEndAsync()
+        $errors = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        if ($LogPath) {
+            [IO.File]::WriteAllText($LogPath, $output.Result + $errors.Result)
+        } else {
+            if ($output.Result) { Write-Host $output.Result.TrimEnd() }
+            if ($errors.Result) { Write-Host $errors.Result.TrimEnd() }
+        }
+        return $process.ExitCode
+    } finally { $process.Dispose() }
 }

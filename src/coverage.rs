@@ -32,7 +32,7 @@ impl Coverage {
             )
         };
         format!(
-            "AdvanceRecomp | {status}{}{}",
+            "AdvanceLiberty: Enhanced | {status}{}{}",
             if paused { " | paused" } else { "" },
             if notice.is_empty() {
                 String::new()

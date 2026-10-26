@@ -30,7 +30,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let rom = fs::read(&args[1])?;
     if rom.len() != 0x1000000 || &rom[0xac..0xb0] != b"BGTE" {
-        return Err("Expected GTA Advance USA ROM".into());
+        return Err("Expected the supported unmodified USA ROM".into());
     }
     let audit = fs::read_to_string(&args[0])?;
     if ram_variants {

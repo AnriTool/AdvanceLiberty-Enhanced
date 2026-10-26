@@ -358,7 +358,7 @@ mod tests {
     #[test]
     #[ignore = "requires local USA ROM and diagnostic output directory"]
     fn native_sequences_fixture() {
-        let root = std::path::PathBuf::from(std::env::var_os("GTA_CHEAT_TEST_DIR").unwrap());
+        let root = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_CHEAT_TEST_DIR").unwrap());
         std::fs::create_dir_all(&root).unwrap();
         let rom = std::fs::read("roms/usa.gba").unwrap();
         for (row, index) in [4, 2, 7, 6, 0, 1, 5, 3, 9].into_iter().enumerate() {

@@ -1,38 +1,38 @@
 {
-  "format": 1,
-  "rom_sha256": "215c574d5afbda0aadbf89dc76b765cfaaeb35953eab63f7687d8bfe8a8e0f4d",
-  "libraries": [
-    {
-      "name": "precise",
-      "path": "native/usa/precise.dll",
-      "source": "native/usa/precise.c",
-      "coverage": "native/usa/coverage/precise.csv",
-      "variants": 87685,
-      "sha256": "8dd9244a6b28a6d150288a2cec374cf261ab6d474bf5a39268560242144421a9"
-    },
-    {
-      "name": "extra",
-      "path": "native/usa/extra.dll",
-      "source": "native/usa/extra.c",
-      "coverage": "native/usa/coverage/extra.csv",
-      "variants": 7940,
-      "sha256": "806d594dbb1ef779dd1a3930a86bc3b1febe3b43eaea4a03932e338826ee47c1"
-    },
-    {
-      "name": "mission",
-      "path": "native/usa/mission.dll",
-      "source": "native/usa/mission.c",
-      "coverage": "native/usa/coverage/mission.csv",
-      "variants": 6386,
-      "sha256": "e658a3da5067dd0258f7089b6ad12970ba66a02b74fff70709ee43322bf65e76"
-    },
-    {
-      "name": "sessions",
-      "path": "native/usa/sessions.dll",
-      "source": "native/usa/sessions.c",
-      "coverage": "native/usa/coverage/sessions.csv",
-      "sha256": "1bd60d775319e62ac6e9903d96f81ab93428d2981fc1c10912a1436c5e14d523",
-      "variants": 45574
-    }
-  ]
+    "format":  1,
+    "rom_sha256":  "215c574d5afbda0aadbf89dc76b765cfaaeb35953eab63f7687d8bfe8a8e0f4d",
+    "libraries":  [
+                      {
+                          "name":  "precise",
+                          "path":  "native/usa/precise.dll",
+                          "source":  "native/usa/precise.c",
+                          "coverage":  "native/usa/coverage/precise.csv",
+                          "variants":  87685,
+                          "sha256":  "8dd9244a6b28a6d150288a2cec374cf261ab6d474bf5a39268560242144421a9"
+                      },
+                      {
+                          "name":  "extra",
+                          "path":  "native/usa/extra.dll",
+                          "source":  "native/usa/extra.c",
+                          "coverage":  "native/usa/coverage/extra.csv",
+                          "variants":  7940,
+                          "sha256":  "806d594dbb1ef779dd1a3930a86bc3b1febe3b43eaea4a03932e338826ee47c1"
+                      },
+                      {
+                          "name":  "mission",
+                          "path":  "native/usa/mission.dll",
+                          "source":  "native/usa/mission.c",
+                          "coverage":  "native/usa/coverage/mission.csv",
+                          "variants":  6386,
+                          "sha256":  "e658a3da5067dd0258f7089b6ad12970ba66a02b74fff70709ee43322bf65e76"
+                      },
+                      {
+                          "name":  "sessions",
+                          "path":  "native/usa/sessions.dll",
+                          "source":  "native/usa/sessions.c",
+                          "coverage":  "native/usa/coverage/sessions.csv",
+                          "sha256":  "75e6debfdb483d9522c3a92c5fbe14b801b47544dd760251c1488edb736c22f0",
+                          "variants":  48551
+                      }
+                  ]
 }

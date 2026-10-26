@@ -39,7 +39,7 @@ impl Save {
         };
         match fs::read(&save.path) {
             Ok(bytes) => {
-                // GTA Advance uses EEPROM. Upstream stores the full 8 KiB array;
+                // The supported game uses EEPROM. Upstream stores the full 8 KiB array;
                 // existing tools also export its active 512-byte region.
                 if !matches!(bytes.len(), 512 | 8192) {
                     return Err(io::Error::new(

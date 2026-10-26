@@ -177,7 +177,7 @@ pub fn discover(directory: &Path, rom: &[u8]) -> Vec<Choice> {
     choices
 }
 
-const USA: &str = "215c574d5afbda0aadbf89dc76b765cfaaeb35953eab63f7687d8bfe8a8e0f4d";
+use crate::rom_profile::USA;
 const FONT_GLYPHS: usize = 88;
 const FONT_RETURN: u32 = 0x0802de67;
 const MAX_FILE: u64 = 4 * 1024 * 1024;
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     #[ignore = "requires the user's USA ROM"]
     fn host_menu_only_pack_keeps_guest_fonts_and_live_switches_alphabets() {
-        let rom = fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").unwrap()).unwrap();
+        let rom = fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").unwrap()).unwrap();
         let mut machine = Machine::new(rom.clone());
         let mut current = None;
         let ru = fs::read("resources/legacy-language-v1-font.json").unwrap();
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     #[ignore = "requires the user's USA ROM"]
     fn live_change_keeps_game_state_and_reuses_memory_arenas() {
-        let rom = fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").unwrap()).unwrap();
+        let rom = fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").unwrap()).unwrap();
         let mut machine = Machine::new(rom.clone());
         let original = word(&rom, 0xcc7f0c + 4);
         machine.bus.frames = 420;
@@ -1014,7 +1014,7 @@ mod tests {
     #[ignore = "requires the user's USA ROM"]
     fn cutscene_atlas_preserves_original_text_and_covers_all_transport_slots() {
         let rom =
-            fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").expect("GTA_LANGUAGE_TEST_ROM"))
+            fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"))
                 .unwrap();
         let alphabet: String = (0..110)
             .map(|i| char::from_u32(0x400 + i).unwrap())
@@ -1076,7 +1076,7 @@ mod tests {
     #[ignore = "requires the user's USA ROM"]
     fn english_export_is_complete_loadable_and_never_overwrites_edits() {
         let rom =
-            fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").expect("GTA_LANGUAGE_TEST_ROM"))
+            fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"))
                 .unwrap();
         let root = std::env::temp_dir().join(format!("english-export-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
@@ -1124,7 +1124,7 @@ mod tests {
     #[ignore = "requires the user's USA ROM"]
     fn discover_real_rom_validates_packs_and_ignores_broken_files() {
         let rom =
-            fs::read(std::env::var_os("GTA_LANGUAGE_TEST_ROM").expect("GTA_LANGUAGE_TEST_ROM"))
+            fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"))
                 .unwrap();
         let root = std::env::temp_dir().join(format!("language-discovery-{}", std::process::id()));
         fs::create_dir(&root).unwrap();

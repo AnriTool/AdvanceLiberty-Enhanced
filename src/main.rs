@@ -1,4 +1,5 @@
-//! Desktop GTA Advance runtime and deterministic replay tools for local AOT libraries.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+//! AdvanceLiberty: Enhanced runtime and deterministic replay tools.
 //! Reuses upstream CPU/hardware semantics; no game code or assets are included.
 use gba_core::{
     capi::{RcgBlock, RtApi, RT_API},
@@ -37,6 +38,8 @@ mod gamepad;
 mod ground_projection;
 mod hud_layout;
 mod language_font;
+#[cfg(feature = "desktop")]
+mod launcher;
 mod localization;
 #[cfg(feature = "desktop")]
 mod menu_audio;
@@ -50,6 +53,7 @@ mod options;
 mod pickup_probe;
 mod rect_windows;
 mod render_settings;
+mod rom_profile;
 mod save;
 mod scene_replay;
 mod session;
@@ -517,7 +521,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     if args.len() < 5 {
         return Err(
-            "Usage: gta-advance ROM INPUT|- FRAMES HASHES.csv|- interp|single|multi|play [LIBRARY ...] [--save PATH] [--controls PATH]"
+            "Usage: AdvanceLiberty ROM INPUT|- FRAMES HASHES.csv|- interp|single|multi|play [LIBRARY ...] [--save PATH] [--controls PATH]"
                 .into(),
         );
     }
@@ -649,9 +653,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(pickup_probe::Probe::open)
         .transpose()?;
     let rom = fs::read(&args[0])?;
-    if rom.len() != 16 * 1024 * 1024 || &rom[0xac..0xb0] != b"BGTE" {
-        return Err("Expected GTA Advance USA ROM".into());
-    }
+    rom_profile::verify(&rom)?;
     let language_path = language_path.or_else(|| {
         if args[1] == "-" {
             return None;
@@ -1375,6 +1377,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 fn main() {
+    #[cfg(feature = "desktop")]
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if launcher::is_portable(&args) {
+            if let Err(error) = launcher::launch(&args) {
+                eprintln!("{error}");
+                launcher::show_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     if let Err(e) = run() {
         eprintln!("{e}");
         std::process::exit(1);
