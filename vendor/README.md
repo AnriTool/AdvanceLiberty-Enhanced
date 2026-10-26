@@ -1,12 +1,15 @@
-# Локальные зависимости
+# Local dependencies
 
-`armv4t/`, `gba-core/`, `recomp-core/` взяты из локальной рабочей копии
+**English** | [Русский](README.ru.md)
+
+`armv4t/`, `gba-core/` and `recomp-core/` come from a local checkout of
 gba-recomp: https://github.com/JRickey/gba-recomp,
-базовая ревизия `de4edf59b872d887046d6a3b005e2df551b6d44c`.
+base revision `de4edf59b872d887046d6a3b005e2df551b6d44c`.
 
-Скопировано текущее работающее состояние с локальными изменениями API
-диагностики, захвата, пошагового AOT и GPU; файлы побайтно сверены при переносе.
-Это самостоятельные зависимости текущего Cargo workspace. Внешняя рабочая
-копия, её Git и её target не требуются для сборки.
+The working state was copied with local diagnostic, capture, instruction-level
+AOT and GPU API changes. Files were compared byte-for-byte during migration.
+These are self-contained dependencies of the current Cargo workspace; the
+external checkout, its Git repository and its target directory are not needed
+for building.
 
-Сохранены исходные лицензии MIT / Apache-2.0 и THIRD-PARTY.md.
+Original MIT/Apache-2.0 license texts and THIRD-PARTY.md are retained.

@@ -1,66 +1,58 @@
 AdvanceLiberty: Enhanced
 Windows x64 / preview
 
-Это неофициальная нативная оболочка для предоставленного игроком образа игры.
-Мы не распространяем ROM, BIOS, сохранения или извлечённые игровые ресурсы.
-Пользователь должен самостоятельно предоставить законно полученный дамп
-собственного картриджа. Приложение не скачивает игру и не предоставляет
-права на оригинальную игру. Проект не связан с её правообладателями.
+Russian instructions: README.ru.txt
 
-ЗАПУСК
-1. Полностью распакуйте папку в доступное для записи место.
-2. Положите собственный неизменённый USA ROM (.gba) в папку roms.
-   Имя файла может быть любым. Также можно перетащить ROM на EXE.
-3. Запустите AdvanceLiberty.exe. Никаких скриптов или компилятора не требуется.
+This is an unofficial native wrapper for a game image supplied by the player.
+We do not distribute ROMs, BIOS files, saves or extracted game assets.
+You must provide a legally obtained dump of your own cartridge. The application
+does not download the game or grant rights to it. This project is not affiliated
+with the original game's rights holders.
 
-Поддерживаемый SHA-256:
+STARTING THE GAME
+1. Extract the complete folder to a writable location.
+2. Put your own unmodified USA ROM (.gba) in roms.
+   Any filename is accepted. You can also drag a ROM onto the EXE.
+3. Run AdvanceLiberty.exe. No scripts or compiler are required.
+
+Supported SHA-256:
 215c574d5afbda0aadbf89dc76b765cfaaeb35953eab63f7687d8bfe8a8e0f4d
-Европейские образы и патчи ROM пока не поддерживаются.
-При отсутствии/несовместимости ROM появляется понятное сообщение.
+European images and ROM patches are not supported yet.
+A missing or incompatible ROM produces an explanatory dialog.
 
-ПО УМОЛЧАНИЮ
-Enhanced-рендер, Enhanced Audio, современное управление.
-16:9, полноэкранный режим и прицеливание мышью при удержании ПКМ.
-Существующие сохранённые настройки сохраняют приоритет.
-Целевой срок жизни денег, оружия и трупов: 30 секунд. При нехватке игровых
-ресурсов предметы могут быть удалены раньше; лимиты игровых пулов сохраняются.
+DEFAULTS
+Enhanced rendering, Enhanced Audio and modern controls.
+16:9, fullscreen and aiming while holding the right mouse button.
+Existing saved choices take precedence.
+Money, weapons and corpses have a target lifetime of 30 seconds. Resource
+shortages may remove them earlier; original game-pool limits remain.
 
-УПРАВЛЕНИЕ
-Пешком: WASD — движение, Shift — бег, J/ЛКМ — огонь/удар,
-Space — прыжок, F — сесть в транспорт, Tab — оружие.
-Транспорт: W/S — газ/тормоз/задний ход, A/D — руль, Space — ручник,
-Shift — сигнал/сирена, F — выйти, Ctrl+A/D — башня, Caps Lock — спецмиссия.
-V — Auto/Low/Medium/High камера. Esc/Enter — игровое меню.
-Enhanced Options — графика, язык и переназначение клавиш.
-Mouse aim (exp.) в On-foot bindings отключает прицеливание мышью.
-F6 — Enhanced/Original рендер, F8 — Enhanced/Classic управление,
-F11 — полный экран. Ctrl+F12 — панель читов.
+CONTROLS
+On foot: WASD moves, Shift sprints, J/LMB fires or attacks,
+Space jumps, F enters a vehicle, Tab changes weapon.
+Vehicles: W/S accelerates or brakes/reverses, A/D steers, Space is the parking
+brake, Shift sounds the horn/siren, F exits, Ctrl+A/D rotates the turret,
+and Caps Lock starts a special mission.
+V cycles Auto/Low/Medium/High camera. Esc/Enter opens the game menu.
+Enhanced Options contains graphics, language and rebinding settings.
+Mouse aim (exp.) in On-foot bindings can disable mouse aiming.
+F6 switches Enhanced/Original rendering; F8 switches Enhanced/Classic controls;
+F11 toggles fullscreen. Ctrl+F12 opens the cheat panel.
 
-ДАННЫЕ
-data/saves/usa.sav — игровой прогресс, .bak — предыдущая версия.
-data/config — настройки. data/logs — журналы запуска.
-data/sessions — диагностические записи игровых сессий.
-При первом запуске languages/en.json извлекается из собственного ROM.
-Дополнительные языковые JSON можно положить в languages и выбрать в меню.
-Не копируйте свои ROM, сохранения и записи сессий в публичный архив сборки.
+USER DATA
+data/saves/usa.sav stores game progress; .bak is its previous version.
+data/config contains preferences; data/logs contains launch logs.
+data/sessions contains diagnostic gameplay recordings.
+On first launch, languages/en.json is extracted from your own ROM.
+Put extra language JSON packs in languages and select them in the menu.
+Do not include personal ROMs, saves or session recordings in a public archive.
 
-ПАРАМЕТРЫ EXE
---original-audio       прежний аппаратный звук
---drop-lifetime 0      исходные правила удаления предметов/трупов
---no-record            без записи диагностической сессии
---rom "путь к ROM"     использовать файл вне папки сборки
+EXE OPTIONS
+--original-audio       original hardware audio
+--drop-lifetime 0      original item/corpse cleanup rules
+--no-record            disable diagnostic session recording
+--rom "path to ROM"    use a file outside the game folder
 
-Нативные библиотеки должны оставаться в native/usa. Не заменяйте ими
-библиотеки другой версии. Не запускайте две копии с одним сохранением.
-Лицензии сторонних компонентов и уведомления находятся в licenses.
-
-ENGLISH QUICK START
-Provide your own legally obtained, unmodified USA cartridge dump.
-No ROM, BIOS, save data or extracted game assets are included or downloaded.
-Extract the complete folder, put your .gba file in roms, then run
-AdvanceLiberty.exe. Any ROM filename is accepted; drag and drop also works.
-European/patched ROMs are incompatible. Enhanced Audio and 30-second drop
-lifetime are enabled by default. Esc opens the menu; Enhanced Options
-contains PC preferences. User data stays inside this portable folder.
-New profiles also default to 16:9, fullscreen, and mouse aiming while
-holding the right mouse button. Existing saved choices take precedence.
+Native libraries must remain in native/usa. Do not mix libraries from different
+versions or run two instances using the same save. Third-party license texts
+and notices are in licenses.

@@ -4,6 +4,7 @@
 /data/
 /test-data/*
 !/test-data/README.md
+!/test-data/README.ru.md
 /roms/*.gba
 /native/usa/*.dll
 /native/usa/*.c

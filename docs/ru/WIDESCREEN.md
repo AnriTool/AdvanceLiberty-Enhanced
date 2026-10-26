@@ -1,5 +1,7 @@
 # Широкий Enhanced-рендер
 
+[English](../en/WIDESCREEN.md) | **Русский**
+
 Для первого запуска выбран 16:9. Переключатель находится в
 Enhanced Options → Graphics → Aspect ratio; Save and return сохраняет выбор.
 Original 3:2 остаётся доступным. Формат мира независим от fullscreen.

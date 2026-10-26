@@ -1,24 +1,9 @@
-# Документация AdvanceLiberty: Enhanced
+# AdvanceLiberty: Enhanced documentation
 
-Документы описывают текущее устройство и использование. Исторические отчёты
-сессий, дампы и промежуточные результаты не нужны сборке или запуску.
+[English](en/README.md) | [Русский](ru/README.md)
 
-## Запуск и разработка
+Choose a language above for user guides, architecture, native coverage,
+rendering, audio, controls and localization documentation.
 
-- [Пользовательская папка и упаковка](PORTABLE.md)
-- [Архитектура и каталоги](PROJECT.md)
-- [Сбор и обновление нативного покрытия](NATIVE_WORKFLOW.md)
-- [Приватные фикстуры проверок](../test-data/README.md)
-
-## Механики
-
-- [Управление и переназначение](CONTROLS.md)
-- [Прицеливание мышью](MOUSE_AIM.md)
-- [Меню и сохранение при выходе](MENUS.md)
-- [Широкий рендер и карты островов](WIDESCREEN.md)
-- [Масштабирование HUD](HUD_LAYOUT.md)
-- [Enhanced Audio](ENHANCED_AUDIO.md)
-- [Звуки меню и камеры](MENU_AUDIO.md)
-- [Время жизни денег, оружия и трупов](DROP_LIFETIME.md)
-- [Панель штатных читов](CHEATS.md)
-- [Языковые пакеты и шрифты](LOCALIZATION.md)
+Выберите язык выше: инструкции, архитектура, нативное покрытие,
+рендеринг, звук, управление и локализация.

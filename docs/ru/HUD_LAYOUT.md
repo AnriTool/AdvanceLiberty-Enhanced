@@ -1,6 +1,8 @@
 # Масштабирование игрового HUD
 
-Настройка: Esc → HUD size. Доступны 100, 85, 75, 65 и 50 процентов.
+[English](../en/HUD_LAYOUT.md) | **Русский**
+
+Настройка: Esc → Enhanced Options → HUD size. Доступны 100, 85, 75, 65 и 50 процентов.
 All elements меняет все три группы; остальные пункты независимы.
 Save and return сохраняет HudRadar, HudStatus, HudMessages в enhanced.cfg.
 Отсутствие новых полей в старом файле означает 100%, ручная миграция не нужна.

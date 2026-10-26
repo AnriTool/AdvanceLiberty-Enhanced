@@ -1,5 +1,7 @@
 # Переносимая сборка AdvanceLiberty: Enhanced
 
+[English](../en/PORTABLE.md) | **Русский**
+
 ## Пользовательская папка
 
 `AdvanceLiberty.exe` — единственная точка запуска. В поставке нет BAT/PS1,
@@ -16,6 +18,7 @@
 ```text
 AdvanceLiberty.exe
 README.txt
+README.ru.txt
 release.json
 native/usa/manifest.json
 native/usa/{precise,extra,mission,sessions}.dll

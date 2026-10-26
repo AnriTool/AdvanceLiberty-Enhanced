@@ -1,5 +1,7 @@
 # Enhanced Output
 
+[English](../en/ENHANCED_AUDIO.md) | **Русский**
+
 Обычный `Play.cmd` включает Enhanced Output по умолчанию.
 Для сравнения с прежним аппаратным звуком: `Play.cmd -OriginalAudio`.
 Явный флаг `Play.cmd -EnhancedAudio` также поддерживается.
