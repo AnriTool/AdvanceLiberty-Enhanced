@@ -431,7 +431,7 @@ impl Controls {
         Ok(())
     }
     pub fn default_file() -> String {
-        format!("Mode = Enhanced\n\n[GBA]\n{DEFAULT}\n{ENHANCED_DEFAULT}\n[Shortcuts]\nCycleCamera = V\n")
+        format!("Mode = Enhanced\nMouseAim = true\n\n[GBA]\n{DEFAULT}\n{ENHANCED_DEFAULT}\n[Shortcuts]\nCycleCamera = V\n")
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn aim_is_a_remappable_hold_without_gba_buttons_and_requires_release_across_contexts() {
         let mut c = Controls::parse(&Controls::default_file()).unwrap();
-        c.toggle_mouse_aim();
+        assert!(c.mouse_aim());
         let mut latch = InputLatch::default();
         assert_eq!(latch.sample(&c, Context::OnFoot, |_| false), 0x3ff);
         assert!(!latch.aiming(&c, Context::OnFoot));
@@ -587,7 +587,10 @@ mod tests {
     }
     #[test]
     fn aim_setting_roundtrips_without_changing_buttons_and_classic_disables_it() {
-        let mut controls = Controls::parse(&Controls::default_file()).unwrap();
+        let mut controls = Controls::parse(
+            &Controls::default_file().replace("MouseAim = true", "MouseAim = false"),
+        )
+        .unwrap();
         assert!(!controls.mouse_aim());
         let held = |b| matches!(b, Binding::Key(Scancode::W | Scancode::J));
         let old = controls.input(Context::OnFoot, held);

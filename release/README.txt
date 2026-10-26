@@ -20,6 +20,8 @@ Windows x64 / preview
 
 ПО УМОЛЧАНИЮ
 Enhanced-рендер, Enhanced Audio, современное управление.
+16:9, полноэкранный режим и прицеливание мышью при удержании ПКМ.
+Существующие сохранённые настройки сохраняют приоритет.
 Целевой срок жизни денег, оружия и трупов: 30 секунд. При нехватке игровых
 ресурсов предметы могут быть удалены раньше; лимиты игровых пулов сохраняются.
 
@@ -30,6 +32,7 @@ Space — прыжок, F — сесть в транспорт, Tab — оруж
 Shift — сигнал/сирена, F — выйти, Ctrl+A/D — башня, Caps Lock — спецмиссия.
 V — Auto/Low/Medium/High камера. Esc/Enter — игровое меню.
 Enhanced Options — графика, язык и переназначение клавиш.
+Mouse aim (exp.) в On-foot bindings отключает прицеливание мышью.
 F6 — Enhanced/Original рендер, F8 — Enhanced/Classic управление,
 F11 — полный экран. Ctrl+F12 — панель читов.
 
@@ -59,3 +62,5 @@ AdvanceLiberty.exe. Any ROM filename is accepted; drag and drop also works.
 European/patched ROMs are incompatible. Enhanced Audio and 30-second drop
 lifetime are enabled by default. Esc opens the menu; Enhanced Options
 contains PC preferences. User data stays inside this portable folder.
+New profiles also default to 16:9, fullscreen, and mouse aiming while
+holding the right mouse button. Existing saved choices take precedence.

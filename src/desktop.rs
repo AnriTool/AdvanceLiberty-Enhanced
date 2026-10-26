@@ -1063,6 +1063,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("camera-shortcut-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let mut ui = Desktop::new(root.join("controls.cfg")).unwrap();
+        assert_eq!(
+            ui.initial_render_settings().aspect,
+            crate::viewport::Aspect::Wide
+        );
+        assert_eq!(
+            ui.canvas.window().fullscreen_state(),
+            sdl2::video::FullscreenType::Desktop
+        );
+        assert!(ui.controls.mouse_aim());
         let events = ui._sdl.event().unwrap();
         let mut settings = Default::default();
         let push = |code, repeat| {
@@ -1126,8 +1135,9 @@ mod tests {
     #[ignore = "requires USA ROM, isolated SDL driver and diagnostic directory"]
     fn island_menu_backgrounds_refresh_pause_and_cached_options() {
         use super::*;
-        let root = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_ISLAND_TEST_DIR").unwrap())
-            .join("menus");
+        let root =
+            std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_ISLAND_TEST_DIR").unwrap())
+                .join("menus");
         std::fs::create_dir_all(&root).unwrap();
         let rom = std::fs::read("roms/usa.gba").unwrap();
         let mut m = gba_core::Machine::new(rom);
@@ -1179,7 +1189,8 @@ mod tests {
     fn cheat_panel_real_sdl() {
         use super::*;
         use sdl2::keyboard::Mod;
-        let root = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_CHEAT_TEST_DIR").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_CHEAT_TEST_DIR").unwrap());
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("controls.cfg");
         std::fs::write(&path, crate::controls::Controls::default_file()).unwrap();
@@ -1645,6 +1656,12 @@ mod tests {
         let path = directory.join("controls.cfg");
         let original = crate::controls::Controls::default_file();
         std::fs::write(&path, &original).unwrap();
+        // Exercise changing an explicitly saved windowed 3:2 profile.
+        std::fs::write(
+            directory.join("enhanced.cfg"),
+            "Aspect = Original\nFullscreen = false\n",
+        )
+        .unwrap();
         let mut ui = Desktop::new(path.clone()).unwrap();
         let creator = ui.texture_creator();
         let mut textures = Textures::new(&creator);
@@ -1834,6 +1851,12 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("mouse-aim-sdl-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("controls.cfg");
+        std::fs::write(
+            &path,
+            crate::controls::Controls::default_file()
+                .replace("MouseAim = true", "MouseAim = false"),
+        )
+        .unwrap();
         let mut ui = Desktop::new(path.clone()).unwrap();
         let creator = ui.texture_creator();
         let mut textures = Textures::new(&creator);
@@ -1972,6 +1995,12 @@ mod tests {
         use crate::render_settings::{Renderer, Settings, TextureMapping};
         let directory = std::env::temp_dir().join(format!("render-keys-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
+        // Uniform-color comparisons below use an explicitly windowed 3:2 view.
+        std::fs::write(
+            directory.join("enhanced.cfg"),
+            "Aspect = Original\nFullscreen = false\n",
+        )
+        .unwrap();
         let mut ui = Desktop::new(directory.join("controls.cfg")).unwrap();
         let creator = ui.texture_creator();
         let mut textures = Textures::new(&creator);

@@ -13,11 +13,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
     pub render: Settings,
     pub fullscreen: bool,
     pub language: Option<String>,
+}
+impl Default for Preferences {
+    fn default() -> Self {
+        let mut render = Settings::default();
+        render.aspect = crate::viewport::Aspect::Wide;
+        Self {
+            render,
+            fullscreen: true,
+            language: None,
+        }
+    }
 }
 impl Preferences {
     pub fn encode(&self) -> String {
