@@ -627,6 +627,8 @@ pub fn change_live(
         ])
         .chain(COLOR_LITERALS)
         .chain(COLOR_WIDTH_LITERALS)
+        .chain(ALT_COLOR_LITERALS)
+        .chain(ALT_COLOR_WIDTH_LITERALS)
     {
         let pointer = word(&image, literal);
         if pointer >= 0x08000000 + cartridge_len as u32 {
@@ -662,6 +664,8 @@ pub fn change_live(
         (0x642d0, 224),
         (0x1770, 224 * 256),
         (0x1774, 224),
+        (0x1f18, 224 * 256),
+        (0x1f1c, 224),
     ] {
         let old = word(&m.bus.rom, literal);
         let new = word(&next.rom, literal);
@@ -763,30 +767,60 @@ const COLOR_LITERALS: [usize; 11] = [
 const COLOR_WIDTH_LITERALS: [usize; 11] = [
     0x1774, 0x1ad4, 0x1ec4, 0x2070, 0x20cc, 0x2234, 0x3e00, 0x3e60, 0x5ca0, 0x5dc0, 0x62df4,
 ];
+// Unselected menu items switch to a second atlas and width table. Keep its
+// original Latin glyphs while installing the same package-owned custom slots.
+const ALT_COLOR_LITERALS: [usize; 5] = [0x1f18, 0x20bc, 0x20f8, 0x3e54, 0x5cc4];
+const ALT_COLOR_WIDTH_LITERALS: [usize; 5] = [0x1f1c, 0x20c0, 0x20fc, 0x3e58, 0x5cc8];
+// Match the game's bright-to-inactive shade ramp (1..9). Custom fonts can
+// additionally use the darker ramp and white: keep outlines/shadows visible,
+// and turn white fill into inactive gold. Zero always stays transparent.
+const INACTIVE_COLOR_SHADES: [u8; 16] = [0, 5, 6, 7, 8, 10, 10, 12, 12, 9, 13, 14, 14, 14, 14, 5];
 fn install_color_font(rom: &mut Vec<u8>, custom: &Font, color: &ColorFont) {
-    const SOURCE: usize = 0x8314d0;
-    const WIDTHS: usize = 0x83f4d0;
-    let mut atlas = rom[SOURCE..SOURCE + 224 * 256].to_vec();
-    let mut widths = rom[WIDTHS..WIDTHS + 224].to_vec();
-    for (index, byte) in crate::language_font::private_codes()
-        .into_iter()
-        .take(custom.len())
-        .enumerate()
-    {
-        let slot = byte as usize - 32;
-        atlas[slot * 256..(slot + 1) * 256].copy_from_slice(&color.tiles[index]);
-        widths[slot] = color.widths[index];
-    }
-    let address = 0x08000000 + rom.len() as u32;
-    rom.extend_from_slice(&atlas);
-    rom.extend_from_slice(&widths);
-    for literal in COLOR_LITERALS {
-        assert_eq!(word(rom, literal), 0x08000000 + SOURCE as u32);
-        set_word(rom, literal, address);
-    }
-    for literal in COLOR_WIDTH_LITERALS {
-        assert_eq!(word(rom, literal), 0x08000000 + WIDTHS as u32);
-        set_word(rom, literal, address + atlas.len() as u32);
+    for (source, width_source, literals, width_literals) in [
+        (
+            0x8314d0,
+            0x83f4d0,
+            &COLOR_LITERALS[..],
+            &COLOR_WIDTH_LITERALS[..],
+        ),
+        (
+            0x83f7b0,
+            0x84d7b0,
+            &ALT_COLOR_LITERALS[..],
+            &ALT_COLOR_WIDTH_LITERALS[..],
+        ),
+    ] {
+        let mut atlas = rom[source..source + 224 * 256].to_vec();
+        let mut widths = rom[width_source..width_source + 224].to_vec();
+        for (index, byte) in crate::language_font::private_codes()
+            .into_iter()
+            .take(custom.len())
+            .enumerate()
+        {
+            let slot = byte as usize - 32;
+            for (pixel, &shade) in atlas[slot * 256..(slot + 1) * 256]
+                .iter_mut()
+                .zip(&color.tiles[index])
+            {
+                *pixel = if source == 0x83f7b0 {
+                    INACTIVE_COLOR_SHADES[shade as usize]
+                } else {
+                    shade
+                };
+            }
+            widths[slot] = color.widths[index];
+        }
+        let address = 0x08000000 + rom.len() as u32;
+        rom.extend_from_slice(&atlas);
+        rom.extend_from_slice(&widths);
+        for &literal in literals {
+            assert_eq!(word(rom, literal), 0x08000000 + source as u32);
+            set_word(rom, literal, address);
+        }
+        for &literal in width_literals {
+            assert_eq!(word(rom, literal), 0x08000000 + width_source as u32);
+            set_word(rom, literal, address + atlas.len() as u32);
+        }
     }
 }
 
@@ -963,11 +997,16 @@ mod tests {
         machine.bus.audio_buf = vec![17, -19];
         set_word(&mut machine.bus.ewram, 0x1000, original); // world data is not a text reference
         set_word(&mut machine.bus.ewram, 0x2693c, original);
+        // The native menu can be using the unselected-item font at switch time.
+        set_word(&mut machine.bus.ewram, 0x36308, word(&rom, 0x1f18) + 256);
+        set_word(&mut machine.bus.ewram, 0x36314, word(&rom, 0x1f1c) + 7);
         let cpu = machine.cpu.clone();
         let pack=serde_json::json!({"version":2,"language":"el","name":"Greek","alphabet":"Ω","font":{"width":3,"height":3,"glyphs":{"Ω":["###","#.#","###"]}},"entries":{"text.00cc7f0c":"Ω Ω", "ui.015b":"Ω"}}).to_string().into_bytes();
         let mut current = None;
         change_live(&mut machine, &rom, &mut current, Some(pack.clone())).unwrap();
         let first_len = machine.bus.rom.len();
+        assert_eq!(word(&machine.bus.ewram, 0x36308), word(&machine.bus.rom, 0x1f18) + 256);
+        assert_eq!(word(&machine.bus.ewram, 0x36314), word(&machine.bus.rom, 0x1f1c) + 7);
         let pointer = word(&machine.bus.ewram, 0x2693c);
         assert_eq!(
             string(&machine.bus.rom, pointer),
@@ -987,6 +1026,8 @@ mod tests {
         assert_eq!(machine.bus.clock, 1234567);
         assert_eq!(machine.bus.audio_buf, vec![17, -19]);
         change_live(&mut machine, &rom, &mut current, None).unwrap();
+        assert_eq!(word(&machine.bus.ewram, 0x36308), word(&machine.bus.rom, 0x1f18) + 256);
+        assert_eq!(word(&machine.bus.ewram, 0x36314), word(&machine.bus.rom, 0x1f1c) + 7);
         assert_eq!(word(&machine.bus.ewram, 0x2693c), original);
         assert_eq!(
             word(&machine.bus.rom, UI_BANK + 0x15b * 4),
@@ -1013,9 +1054,11 @@ mod tests {
     #[test]
     #[ignore = "requires the user's USA ROM"]
     fn cutscene_atlas_preserves_original_text_and_covers_all_transport_slots() {
-        let rom =
-            fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"))
-                .unwrap();
+        let rom = fs::read(
+            std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM")
+                .expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"),
+        )
+        .unwrap();
         let alphabet: String = (0..110)
             .map(|i| char::from_u32(0x400 + i).unwrap())
             .collect();
@@ -1028,7 +1071,12 @@ mod tests {
                 .unwrap();
         let font = Font::compile(&alphabet, Some(definition)).unwrap();
         let mut image = rom.clone();
-        install_fonts(&mut image, &font, &ColorFont::generated(&font));
+        let mut color = ColorFont::generated(&font);
+        // White is valid package ink even though original gold letters use 1..9.
+        for tile in &mut color.tiles {
+            tile[0] = 15;
+        }
+        install_fonts(&mut image, &font, &color);
         let atlas = (word(&image, 0x642cc) - 0x08000000) as usize;
         let widths = (word(&image, 0x642d0) - 0x08000000) as usize;
         let color_atlas = (word(&image, 0x1770) - 0x08000000) as usize;
@@ -1039,8 +1087,45 @@ mod tests {
         assert!(COLOR_WIDTH_LITERALS
             .iter()
             .all(|&literal| word(&image, literal) == word(&image, 0x1774)));
+        let alt_atlas = (word(&image, 0x1f18) - 0x08000000) as usize;
+        let alt_widths = (word(&image, 0x1f1c) - 0x08000000) as usize;
+        assert!(ALT_COLOR_LITERALS
+            .iter()
+            .all(|&literal| word(&image, literal) == word(&image, 0x1f18)));
+        assert!(ALT_COLOR_WIDTH_LITERALS
+            .iter()
+            .all(|&literal| word(&image, literal) == word(&image, 0x1f1c)));
+        // Verify the shade conversion against actual original menu letters,
+        // rather than just expecting the implementation's lookup table.
+        for byte in b"ABCNEW" {
+            let slot = (*byte as usize - 32) * 256;
+            let expected: Vec<_> = rom[0x8314d0 + slot..0x8314d0 + slot + 256]
+                .iter()
+                .map(|&shade| INACTIVE_COLOR_SHADES[shade as usize])
+                .collect();
+            assert_eq!(expected, rom[0x83f7b0 + slot..0x83f7b0 + slot + 256]);
+        }
         for byte in 32..=255u8 {
             let slot = byte as usize - 32;
+            if font.index(byte as u32).is_some() {
+                assert_eq!(image[color_atlas + slot * 256], 15);
+                assert_eq!(image[alt_atlas + slot * 256], 5);
+                let inactive: Vec<_> = image[color_atlas + slot * 256..color_atlas + (slot + 1) * 256]
+                    .iter()
+                    .map(|&shade| INACTIVE_COLOR_SHADES[shade as usize])
+                    .collect();
+                assert_eq!(
+                    &image[alt_atlas + slot * 256..alt_atlas + (slot + 1) * 256],
+                    inactive.as_slice()
+                );
+                assert_eq!(image[alt_widths + slot], image[color_widths + slot]);
+            } else {
+                assert_eq!(
+                    &image[alt_atlas + slot * 256..alt_atlas + (slot + 1) * 256],
+                    &rom[0x83f7b0 + slot * 256..0x83f7b0 + (slot + 1) * 256]
+                );
+                assert_eq!(image[alt_widths + slot], rom[0x84d7b0 + slot]);
+            }
             if font.index(byte as u32).is_none() {
                 assert_eq!(
                     &image[color_atlas + slot * 256..color_atlas + (slot + 1) * 256],
@@ -1075,9 +1160,11 @@ mod tests {
     #[test]
     #[ignore = "requires the user's USA ROM"]
     fn english_export_is_complete_loadable_and_never_overwrites_edits() {
-        let rom =
-            fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"))
-                .unwrap();
+        let rom = fs::read(
+            std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM")
+                .expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"),
+        )
+        .unwrap();
         let root = std::env::temp_dir().join(format!("english-export-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
         let directory = root.join("languages");
@@ -1123,9 +1210,11 @@ mod tests {
     #[test]
     #[ignore = "requires the user's USA ROM"]
     fn discover_real_rom_validates_packs_and_ignores_broken_files() {
-        let rom =
-            fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"))
-                .unwrap();
+        let rom = fs::read(
+            std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM")
+                .expect("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM"),
+        )
+        .unwrap();
         let root = std::env::temp_dir().join(format!("language-discovery-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
         let pack = serde_json::json!({"version":2,"language":"ru","name":"Русский","entries":{}});

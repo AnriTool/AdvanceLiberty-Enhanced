@@ -325,3 +325,20 @@ change. Game-string `%...` and `@1` syntax does not apply to this section.
 `validate-pack` checks both sections and reports `menu_translated`. To apply
 edits without restarting, reselect the pack in Enhanced Options → Language
 and choose Save and return.
+
+## Offline font editor
+
+Open [tools/font-editor.html](../../tools/font-editor.html) directly in a browser.
+Its interface, validation messages and tooltips are in English.
+It edits both `font` and `color_font`, including dimensions, shadow, aliases,
+palette indices and global/per-glyph advances. Import a complete v2 language pack,
+edit its pixel glyphs, then download the complete pack to preserve its translations.
+The font-only download is a transferable fragment, not a standalone game pack.
+Undo/redo, previews and a browser-local draft are included; no server or network
+connection is required. Preview shade colors are approximate: the game supplies
+the actual palette. The editor checks glyph rows and format constraints before
+export. It does not automatically overwrite the file opened from disk.
+
+The game derives a dimmer version of custom `color_font` glyphs for unselected
+menu items, matching the original gold shade ramp. Selected text keeps the
+pack’s normal shades; shapes, spacing, transparency and the JSON format stay the same.
