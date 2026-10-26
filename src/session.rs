@@ -86,6 +86,10 @@ impl Session {
         )?;
         self.input.flush()
     }
+    pub fn camera_change(&mut self, frame: u64, mode: u8) -> io::Result<()> {
+        writeln!(self.input, "# camera {frame} {mode}")?;
+        self.input.flush()
+    }
     pub fn aim(&mut self, frame: u64, angle: Option<u16>) -> io::Result<()> {
         if self.aim.is_none() && angle.is_some() {
             let mut aim = BufWriter::new(File::create_new(self.directory.join("aim.gba-aim"))?);
@@ -191,6 +195,15 @@ mod tests {
         let text = "{\"name\":\"Русский\",\"entries\":{\"x\":\"line\\nnext\"}}".as_bytes();
         session.language_change(10, Some(text)).unwrap();
         session.language_change(20, None).unwrap();
+        session.camera_change(22, 1).unwrap();
+        session.camera_change(30, 2).unwrap();
+        assert_eq!(
+            crate::camera_mode::changes(
+                &fs::read_to_string(directory.join("input.gba-input")).unwrap()
+            )
+            .unwrap(),
+            vec![(22, 1), (30, 2)]
+        );
         assert_eq!(
             crate::input(directory.join("input.gba-input").to_str().unwrap()).unwrap(),
             vec![(0, 0x3ff), (2, 0x3fe)]

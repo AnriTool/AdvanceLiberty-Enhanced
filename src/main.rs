@@ -13,6 +13,7 @@ use std::{
 mod block_check;
 mod building_material;
 mod building_projection;
+mod camera_mode;
 mod camera_preview;
 mod camera_trace;
 mod cash_protection;
@@ -36,6 +37,8 @@ mod ground_projection;
 mod hud_layout;
 mod language_font;
 mod localization;
+#[cfg(feature = "desktop")]
+mod menu_audio;
 mod menu_text;
 mod mouse_aim;
 mod native_audit;
@@ -174,7 +177,9 @@ fn input(path: &str) -> Result<Vec<(u64, u16)>, Box<dyn std::error::Error>> {
         return Err("Invalid input header".into());
     }
     let mut points = Vec::new();
-    for line in lines.filter(|l| !l.trim().is_empty() && !l.starts_with("# language ")) {
+    for line in lines.filter(|l| {
+        !l.trim().is_empty() && !l.starts_with("# language ") && !l.starts_with("# camera ")
+    }) {
         let (f, k) = line.split_once(' ').ok_or("Invalid input line")?;
         let frame = f.parse()?;
         let mask = u16::from_str_radix(k, 16)?;
@@ -563,6 +568,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         localization::changes(std::path::Path::new(&args[1]))?
     };
+    let mut camera_changes = if args[1] == "-" {
+        Vec::new()
+    } else {
+        camera_mode::changes(&fs::read_to_string(&args[1])?)?
+    }
+    .into_iter()
+    .peekable();
     if !recorded_language_changes.is_empty()
         && (mode == "interp" || force_interpreter || check_options.is_some())
     {
@@ -882,6 +894,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
+        while camera_changes
+            .peek()
+            .is_some_and(|(frame, _)| *frame == before)
+        {
+            let (_, mode) = camera_changes.next().unwrap();
+            camera_mode::set(&mut m.bus, mode)?;
+            if let Some(recording) = recording.as_mut() {
+                recording.camera_change(before, mode)?;
+            }
+        }
         while language_changes
             .peek()
             .is_some_and(|(frame, _)| *frame == before)
@@ -918,6 +940,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 break;
             };
+            let cycles = ui.take_camera_cycles();
+            if args[1] == "-" {
+                for _ in 0..cycles {
+                    if let Some(mode) = camera_mode::cycle(&mut m.bus) {
+                        if let Some(recording) = recording.as_mut() {
+                            recording.camera_change(before, mode)?;
+                        }
+                        eprintln!("Camera: {}", camera_mode::NAMES[mode as usize]);
+                    }
+                }
+            }
             if ui.take_language_scan() {
                 ui.set_languages(localization::discover(&language_directory, &rom));
             }

@@ -169,6 +169,7 @@ pub struct Menu {
     cached: Option<sdl2::surface::Surface<'static>>,
     pub skin: Option<std::sync::Arc<crate::game_menu::Skin>>,
     pub can_save_game: bool,
+    click: bool,
 }
 impl Menu {
     pub fn new(controls: Controls, prefs: Preferences) -> Self {
@@ -189,6 +190,7 @@ impl Menu {
             cached: None,
             skin: None,
             can_save_game: false,
+            click: false,
         }
     }
     pub fn with_languages(mut self, languages: Vec<crate::localization::Choice>) -> Self {
@@ -257,7 +259,7 @@ impl Menu {
         } else if self.language_page {
             self.languages.len() + 2
         } else if self.graphics_page {
-            3
+            4
         } else if self.hud_page {
             5
         } else {
@@ -268,7 +270,11 @@ impl Menu {
     fn first_row(&self) -> usize {
         self.row.saturating_sub(10)
     }
+    pub fn take_click(&mut self) -> bool {
+        std::mem::take(&mut self.click)
+    }
     fn back(&mut self) -> Command {
+        self.click = true;
         if self.capture.take().is_some() {
             self.message.clear();
         } else if self.confirm_quit {
@@ -298,6 +304,7 @@ impl Menu {
         Command::None
     }
     fn activate(&mut self) -> Command {
+        self.click = true;
         self.message.clear();
         if self.confirm_quit {
             return if self.can_save_game && self.row == 0 {
@@ -324,6 +331,7 @@ impl Menu {
             match self.row {
                 0 => self.prefs.render.toggle_textures(),
                 1 => self.prefs.render.aspect.toggle(),
+                2 => self.capture = Some(false),
                 _ => return self.back(),
             }
             return Command::None;
@@ -378,6 +386,7 @@ impl Menu {
         Command::None
     }
     pub fn event(&mut self, event: &Event) -> Command {
+        self.click = false;
         self.cached = None;
         if let Event::KeyDown {
             keycode: Some(Keycode::Escape),
@@ -403,10 +412,13 @@ impl Menu {
                 _ => None,
             };
             if let Some(key) = key {
-                match self
-                    .controls
-                    .rebind(self.section.unwrap(), self.row, Some(key), add)
-                {
+                self.click = true;
+                match self.controls.rebind(
+                    self.section.unwrap_or(3),
+                    if self.graphics_page { 0 } else { self.row },
+                    Some(key),
+                    add,
+                ) {
                     Ok(()) => {
                         self.capture = None;
                         self.message = "Binding updated (not saved yet)".into();
@@ -448,8 +460,14 @@ impl Menu {
             _ => None,
         };
         match key {
-            Some(Keycode::Up) => self.row = (self.row + self.count() - 1) % self.count(),
-            Some(Keycode::Down) => self.row = (self.row + 1) % self.count(),
+            Some(Keycode::Up) => {
+                self.row = (self.row + self.count() - 1) % self.count();
+                self.click = self.count() > 1;
+            }
+            Some(Keycode::Down) => {
+                self.row = (self.row + 1) % self.count();
+                self.click = self.count() > 1;
+            }
             Some(Keycode::Escape) => return self.back(),
             Some(Keycode::Return | Keycode::KpEnter) => return self.activate(),
             Some(
@@ -465,6 +483,7 @@ impl Menu {
                 return self.activate()
             }
             Some(Keycode::Left | Keycode::Right) if self.hud_page => {
+                self.click = true;
                 self.prefs
                     .render
                     .hud
@@ -475,16 +494,25 @@ impl Menu {
             {
                 return self.activate()
             }
-            Some(Keycode::Insert) if self.section.is_some() => self.capture = Some(true),
-            Some(Keycode::Delete | Keycode::Backspace) if self.section.is_some() => {
-                self.message =
-                    match self
-                        .controls
-                        .rebind(self.section.unwrap(), self.row, None, false)
-                    {
-                        Ok(()) => "Binding cleared (not saved yet)".into(),
-                        Err(e) => format!("Binding error: {e}"),
-                    };
+            Some(Keycode::Insert)
+                if self.section.is_some() || (self.graphics_page && self.row == 2) =>
+            {
+                self.capture = Some(true);
+                self.click = true;
+            }
+            Some(Keycode::Delete | Keycode::Backspace)
+                if self.section.is_some() || (self.graphics_page && self.row == 2) =>
+            {
+                self.click = true;
+                self.message = match self.controls.rebind(
+                    self.section.unwrap_or(3),
+                    if self.graphics_page { 0 } else { self.row },
+                    None,
+                    false,
+                ) {
+                    Ok(()) => "Binding cleared (not saved yet)".into(),
+                    Err(e) => format!("Binding error: {e}"),
+                };
             }
             _ => {}
         }
@@ -624,6 +652,7 @@ impl Menu {
                         "Original 3:2".into()
                     },
                 ),
+                ("Cycle camera key".into(), self.controls.binding_text(3, 0)),
                 ("Back".into(), String::new()),
             ]
         } else if self.hud_page {
@@ -740,6 +769,8 @@ impl Menu {
             "Enter: select language   Esc: back"
         } else if self.capture.is_some() {
             "Press a key / mouse button. Esc: cancel capture"
+        } else if self.graphics_page && self.row == 2 {
+            "Enter: replace  Ins: add  Del: clear  Esc: back"
         } else if self.graphics_page {
             "Left / right: change   Enter: select   Esc: back"
         } else if self.hud_page {
@@ -905,6 +936,30 @@ pub(crate) fn text_with_font<T: sdl2::render::RenderTarget>(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn camera_shortcut_can_be_rebound_and_cleared_in_graphics() {
+        use super::*;
+        let mut menu = Menu::new(
+            Controls::parse(&Controls::default_file()).unwrap(),
+            Preferences::default(),
+        );
+        menu.graphics_page = true;
+        menu.row = 2;
+        menu.event(&key(Keycode::Return));
+        assert_eq!(menu.capture, Some(false));
+        menu.event(&key(Keycode::C));
+        assert_eq!(menu.capture, None);
+        assert_eq!(menu.controls.binding_text(3, 0), "C");
+        menu.event(&key(Keycode::Insert));
+        menu.event(&key(Keycode::V));
+        assert_eq!(menu.controls.binding_text(3, 0), "C, V");
+        menu.event(&key(Keycode::Delete));
+        assert_eq!(menu.controls.binding_text(3, 0), "None");
+        menu.event(&key(Keycode::Return));
+        menu.event(&key(Keycode::Escape));
+        assert_eq!(menu.capture, None);
+        assert!(menu.graphics_page);
+    }
+    #[test]
     fn exit_dialog_offers_game_save_without_confusing_it_with_pc_preferences() {
         let mut menu = super::Menu::new(
             crate::controls::Controls::parse(&crate::controls::Controls::default_file()).unwrap(),
@@ -936,6 +991,56 @@ mod tests {
             repeat: false,
         }
     }
+    #[test]
+    fn menu_clicks_follow_actions_and_ignore_motion_releases_and_repeat_confirm() {
+        let controls = Controls::parse(&Controls::default_file()).unwrap();
+        let mut menu = Menu::new(controls, Preferences::default());
+        for k in [
+            Keycode::Down,
+            Keycode::Return,
+            Keycode::Return,
+            Keycode::Escape,
+            Keycode::Escape,
+        ] {
+            menu.event(&key(k));
+            assert!(menu.take_click(), "{k:?}");
+            assert!(!menu.take_click());
+        }
+        menu.event(&Event::MouseMotion {
+            timestamp: 0,
+            window_id: 0,
+            which: 0,
+            mousestate: sdl2::mouse::MouseState::from_sdl_state(0),
+            x: 50,
+            y: 120,
+            xrel: 1,
+            yrel: 0,
+        });
+        assert!(!menu.take_click());
+        let mut repeated = key(Keycode::Return);
+        if let Event::KeyDown { repeat, .. } = &mut repeated {
+            *repeat = true;
+        }
+        menu.event(&repeated);
+        assert!(!menu.take_click());
+        menu.event(&Event::ControllerButtonDown {
+            timestamp: 0,
+            which: 0,
+            button: sdl2::controller::Button::DPadDown,
+        });
+        assert!(menu.take_click());
+        menu.event(&Event::MouseButtonDown {
+            timestamp: 0,
+            window_id: 0,
+            which: 0,
+            mouse_btn: MouseButton::Left,
+            clicks: 1,
+            x: 50,
+            y: 104,
+        });
+        assert!(menu.take_click());
+    }
+
     #[test]
     fn drafts_rebind_conflicts_cancel_and_preserve_other_profiles() {
         let controls = Controls::parse(&Controls::default_file()).unwrap();

@@ -62,6 +62,7 @@ pub struct Controls {
     mouse_aim: bool,
     foot: [Vec<Binding>; 12],
     vehicle: [Vec<Binding>; 11],
+    shortcuts: [Vec<Binding>; 1],
 }
 
 #[derive(Default)]
@@ -227,6 +228,7 @@ impl Controls {
         .map(|s| binding(s, 0, true).unwrap());
         let mut mode = Mode::Classic; // Existing ten-button files retain their original behavior.
         let mut mouse_aim = false;
+        let mut shortcuts = [vec![Binding::Key(Scancode::V)]];
         let mut seen = HashSet::new();
         let mut section = 0usize;
         for (line, raw) in text.lines().enumerate() {
@@ -240,7 +242,8 @@ impl Controls {
                     "gba" => 0,
                     "onfoot" => 1,
                     "vehicle" => 2,
-                    _ => return Err(error("unknown section (GBA, OnFoot, Vehicle)")),
+                    "shortcuts" => 3,
+                    _ => return Err(error("unknown section (GBA, OnFoot, Vehicle, Shortcuts)")),
                 };
                 continue;
             }
@@ -271,6 +274,7 @@ impl Controls {
             let actions = match section {
                 0 => ACTIONS.as_slice(),
                 1 => FOOT.as_slice(),
+                3 => &["CycleCamera"],
                 _ => VEHICLE.as_slice(),
             };
             let index = actions
@@ -281,6 +285,7 @@ impl Controls {
             match section {
                 0 => keys[index] = values,
                 1 => foot[index] = values,
+                3 => shortcuts[index] = values,
                 _ => vehicle[index] = values,
             };
         }
@@ -297,12 +302,28 @@ impl Controls {
         validate_profile("GBA", &ACTIONS, &keys)?;
         validate_profile("OnFoot", &FOOT, &foot)?;
         validate_profile("Vehicle", &VEHICLE, &vehicle)?;
+        // Preserve old customized profiles which already use V for gameplay.
+        let gameplay = keys.iter().chain(foot.iter()).chain(vehicle.iter());
+        if !seen.contains(&(3, "cyclecamera".to_owned()))
+            && gameplay
+                .clone()
+                .any(|b| b.contains(&Binding::Key(Scancode::V)))
+        {
+            shortcuts[0].clear();
+        }
+        if shortcuts[0]
+            .iter()
+            .any(|key| gameplay.clone().any(|b| b.contains(key)))
+        {
+            return Err("Camera shortcut conflicts with a gameplay binding".into());
+        }
         Ok(Self {
             keys,
             mode,
             mouse_aim,
             foot,
             vehicle,
+            shortcuts,
         })
     }
 
@@ -310,6 +331,7 @@ impl Controls {
         match section {
             0 => &ACTIONS,
             1 => &FOOT,
+            3 => &["CycleCamera"],
             _ => &VEHICLE,
         }
     }
@@ -317,6 +339,7 @@ impl Controls {
         match section {
             0 => &self.keys[row],
             1 => &self.foot[row],
+            3 => &self.shortcuts[row],
             _ => &self.vehicle[row],
         }
     }
@@ -345,7 +368,7 @@ impl Controls {
             "# Native options; SDL physical key names.\nMode = {:?}\nMouseAim = {}\n",
             self.mode, self.mouse_aim
         );
-        for (section, name) in ["GBA", "OnFoot", "Vehicle"].iter().enumerate() {
+        for (section, name) in ["GBA", "OnFoot", "Vehicle", "Shortcuts"].iter().enumerate() {
             text.push_str(&format!("\n[{name}]\n"));
             for (row, action) in Self::actions(section).iter().enumerate() {
                 text.push_str(&format!("{action} = {}\n", self.binding_text(section, row)));
@@ -362,13 +385,14 @@ impl Controls {
         key: Option<Binding>,
         add: bool,
     ) -> Result<(), String> {
-        if section > 2 || row >= Self::actions(section).len() {
+        if section > 3 || row >= Self::actions(section).len() {
             return Err("Unknown action".into());
         }
         let mut candidate = self.clone();
         let keys = match section {
             0 => &mut candidate.keys[row],
             1 => &mut candidate.foot[row],
+            3 => &mut candidate.shortcuts[row],
             _ => &mut candidate.vehicle[row],
         };
         if !add {
@@ -384,6 +408,9 @@ impl Controls {
     }
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+    pub fn cycles_camera(&self, key: Binding) -> bool {
+        self.shortcuts[0].contains(&key)
     }
     pub fn mouse_aim(&self) -> bool {
         self.mode == Mode::Enhanced && self.mouse_aim
@@ -404,7 +431,7 @@ impl Controls {
         Ok(())
     }
     pub fn default_file() -> String {
-        format!("Mode = Enhanced\n\n[GBA]\n{DEFAULT}\n{ENHANCED_DEFAULT}")
+        format!("Mode = Enhanced\n\n[GBA]\n{DEFAULT}\n{ENHANCED_DEFAULT}\n[Shortcuts]\nCycleCamera = V\n")
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -498,6 +525,34 @@ impl Controls {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn camera_shortcut_defaults_migrates_and_rejects_conflicts() {
+        use super::*;
+        let v = Binding::Key(Scancode::V);
+        let c = Binding::Key(Scancode::C);
+        let mut controls = Controls::parse(DEFAULT).unwrap();
+        assert!(controls.cycles_camera(v));
+        controls.rebind(3, 0, Some(c), false).unwrap();
+        assert!(controls.cycles_camera(c));
+        assert!(!controls.cycles_camera(v));
+        assert!(Controls::parse(&controls.encode())
+            .unwrap()
+            .cycles_camera(c));
+        let before = controls.encode();
+        for key in [Scancode::W, Scancode::F12] {
+            assert!(controls
+                .rebind(3, 0, Some(Binding::Key(key)), false)
+                .is_err());
+            assert_eq!(controls.encode(), before);
+        }
+        assert!(controls.rebind(1, 6, Some(c), false).is_err());
+        controls.rebind(3, 0, None, false).unwrap();
+        assert_eq!(controls.binding_text(3, 0), "None");
+        let legacy = DEFAULT.replace("L = Q", "L = V");
+        let migrated = Controls::parse(&legacy).unwrap();
+        assert!(!migrated.cycles_camera(v));
+        assert!(Controls::parse(&format!("{legacy}\n[Shortcuts]\nCycleCamera = V")).is_err());
+    }
     use super::*;
     #[test]
     fn aim_is_a_remappable_hold_without_gba_buttons_and_requires_release_across_contexts() {

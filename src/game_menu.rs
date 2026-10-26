@@ -315,6 +315,7 @@ pub struct Frontend {
     quiet_pulse: bool,
     save_exit: Option<SaveExit>,
     save_exit_error: Option<String>,
+    click: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExitStage {
@@ -605,7 +606,11 @@ impl Frontend {
         }
         0x3ff
     }
+    pub fn take_click(&mut self) -> bool {
+        std::mem::take(&mut self.click)
+    }
     pub fn event(&mut self, e: &Event) -> Action {
+        self.click = false;
         if self.save_exit_active() {
             return Action::None;
         }
@@ -645,12 +650,16 @@ impl Frontend {
         }
         match key {
             Some(Keycode::Up | Keycode::Down) => {
+                let old_row = self.row;
                 self.row = if key == Some(Keycode::Up) {
                     self.row.saturating_sub(1)
                 } else {
                     (self.row + 1).min(count - 1)
                 };
                 let v = self.view.as_ref().unwrap();
+                self.click = self.row != old_row
+                    && (self.row >= v.ids.len()
+                        || (old_row >= v.ids.len() && self.row == v.native_row));
                 self.plan = if self.row < v.ids.len() {
                     Some(Plan {
                         descriptor: v.descriptor,
@@ -781,6 +790,28 @@ mod tests {
         m.cpu.regs[0] = ROOT;
         m
     }
+    #[test]
+    fn custom_rows_click_without_duplicating_native_navigation_sound() {
+        let mut m = machine();
+        let mut f = Frontend::default();
+        m.cpu.regs[0] = ROOT;
+        m.cpu.regs[1] = 5;
+        f.observe(&m, 0x080011ed);
+        f.event(&event(Keycode::Down));
+        assert!(f.take_click());
+        assert!(!f.take_click());
+        f.event(&event(Keycode::Down));
+        assert!(f.take_click());
+        f.event(&event(Keycode::Down));
+        assert!(!f.take_click()); // already at bottom
+        f.event(&event(Keycode::Up));
+        assert!(f.take_click());
+        f.event(&event(Keycode::Up));
+        assert!(f.take_click()); // native cursor is already here
+        f.event(&event(Keycode::Up));
+        assert!(!f.take_click()); // original game supplies this one
+    }
+
     #[test]
     fn navigation_waits_for_observed_selection_and_records_only_gba_buttons() {
         let mut m = machine();

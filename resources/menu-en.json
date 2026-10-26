@@ -7,6 +7,7 @@
   "brief": "Brief",
   "stats": "Stats",
   "camera": "Camera",
+  "cycle_camera_key": "Cycle camera key",
   "game_paused": "Game Paused",
   "confirm_quit": "Confirm Quit",
   "save_and_quit": "Save and Quit",

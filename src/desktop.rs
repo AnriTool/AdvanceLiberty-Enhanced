@@ -1,5 +1,4 @@
 use sdl2::{
-    audio::{AudioQueue, AudioSpecDesired},
     event::{Event, WindowEvent},
     keyboard::Keycode,
     pixels::PixelFormatEnum,
@@ -64,13 +63,16 @@ impl<'a> Textures<'a> {
 }
 
 pub struct Desktop {
+    camera_cycles: u32,
     cheats: crate::cheats::Panel,
     aim_pointer: Option<sdl2::mouse::Cursor>,
     arrow_pointer: Option<sdl2::mouse::Cursor>,
     pointer_is_aim: bool,
     canvas: Canvas<Window>,
     events: sdl2::EventPump,
-    audio: Option<AudioQueue<i16>>,
+    audio: Option<crate::menu_audio::Output>,
+    menu_click: Option<std::sync::Arc<[i16]>>,
+    sfx_volume: u8,
     _sdl: sdl2::Sdl,
     pixels: Vec<u8>,
     frame_size: (u32, u32),
@@ -199,28 +201,18 @@ impl Desktop {
         let aim_pointer = sdl2::mouse::Cursor::new(&data, &mask, 32, 32, 15, 15).ok();
         let arrow_pointer = sdl2::mouse::Cursor::from_system(sdl2::mouse::SystemCursor::Arrow).ok();
 
-        let audio = (|| {
-            let subsystem = sdl.audio()?;
-            subsystem.open_queue::<i16, _>(
-                None,
-                &AudioSpecDesired {
-                    freq: Some(65536),
-                    channels: Some(2),
-                    samples: Some(2048),
-                },
-            )
-        })();
-        let audio = match audio {
-            Ok(q) => {
-                q.resume();
-                Some(q)
-            }
+        let audio = match sdl
+            .audio()
+            .and_then(|subsystem| crate::menu_audio::Output::open(&subsystem))
+        {
+            Ok(audio) => Some(audio),
             Err(e) => {
                 eprintln!("Audio unavailable: {e}");
                 None
             }
         };
         Ok(Self {
+            camera_cycles: 0,
             cheats: Default::default(),
             aim_pointer,
             arrow_pointer,
@@ -242,6 +234,8 @@ impl Desktop {
             canvas,
             events,
             audio,
+            menu_click: None,
+            sfx_volume: 3,
             _sdl: sdl,
             pixels: vec![0; 240 * 160 * 3],
             frame_size: (240, 160),
@@ -283,6 +277,12 @@ impl Desktop {
         rom: &[u8],
         language: Option<&crate::localization::Language>,
     ) -> Result<(), String> {
+        if self.menu_click.is_none() {
+            match crate::menu_audio::load_click(rom) {
+                Ok(click) => self.menu_click = Some(click),
+                Err(e) => eprintln!("Menu sound unavailable: {e}"),
+            }
+        }
         let region = self.menu_skin.as_ref().map_or(0, |s| s.region());
         let mut skin = crate::game_menu::Skin::load(rom)?;
         std::sync::Arc::get_mut(&mut skin)
@@ -298,7 +298,21 @@ impl Desktop {
         }
         Ok(())
     }
+    fn play_menu_click(&mut self) {
+        if let (Some(audio), Some(click)) = (&mut self.audio, &self.menu_click) {
+            audio.click(click.clone(), self.sfx_volume);
+        }
+    }
     pub fn sync_menu_region(&mut self, bus: &gba_core::MemMap) {
+        if bus.ewram.get(0x3e4) == Some(&1) {
+            let volume = bus.ewram[0x10c61].min(3);
+            if self.sfx_volume != volume {
+                self.sfx_volume = volume;
+                if let Some(audio) = &mut self.audio {
+                    audio.set_volume(volume);
+                }
+            }
+        }
         let Some(region) = crate::game_menu::current_region(bus) else {
             return;
         };
@@ -354,6 +368,7 @@ impl Desktop {
             menu.request_quit();
         }
         self.menu = Some(menu);
+        self.play_menu_click();
         self.language_scan = true;
         self.title_initialized = false;
     }
@@ -460,6 +475,9 @@ impl Desktop {
                     continue;
                 }
                 let command = self.menu.as_mut().unwrap().event(&event);
+                if self.menu.as_mut().unwrap().take_click() {
+                    self.play_menu_click();
+                }
                 match command {
                     crate::options::Command::None => {}
                     crate::options::Command::Quit => return Ok(None),
@@ -504,6 +522,37 @@ impl Desktop {
                 self.input_latch = Default::default();
                 continue;
             }
+            if self.focused
+                && !self.paused()
+                && context != crate::control_context::Context::Menu
+                && self.game_menu.view.is_none()
+                && !self.game_menu.modal
+                && !self.game_menu.busy()
+                && !self.cheats.captures_input()
+            {
+                let key = match event {
+                    Event::KeyDown {
+                        scancode: Some(code),
+                        repeat: false,
+                        ..
+                    } => Some(crate::controls::Binding::Key(code)),
+                    Event::MouseButtonDown { mouse_btn, .. } => match mouse_btn {
+                        sdl2::mouse::MouseButton::Left => Some(crate::controls::Binding::MouseLeft),
+                        sdl2::mouse::MouseButton::Middle => {
+                            Some(crate::controls::Binding::MouseMiddle)
+                        }
+                        sdl2::mouse::MouseButton::Right => {
+                            Some(crate::controls::Binding::MouseRight)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if key.is_some_and(|key| self.controls.cycles_camera(key)) {
+                    self.camera_cycles = self.camera_cycles.saturating_add(1);
+                    continue;
+                }
+            }
             if self.menu_skin.is_some()
                 && self.game_menu.view.is_some()
                 && !matches!(
@@ -518,7 +567,11 @@ impl Desktop {
                 )
             {
                 if self.focused {
-                    match self.game_menu.event(&event) {
+                    let action = self.game_menu.event(&event);
+                    if self.game_menu.take_click() {
+                        self.play_menu_click();
+                    }
+                    match action {
                         crate::game_menu::Action::Options => self.open_options(*settings, false),
                         crate::game_menu::Action::Quit => self.open_options(*settings, true),
                         crate::game_menu::Action::None => {}
@@ -675,7 +728,7 @@ impl Desktop {
             self.fps_started = Instant::now();
             self.fps_frames = 0;
             self.fps = None;
-            if let Some(audio) = &self.audio {
+            if let Some(audio) = &mut self.audio {
                 audio.clear();
             }
             self.next_frame = Instant::now();
@@ -761,6 +814,9 @@ impl Desktop {
             buttons |= 8;
         }
         Ok(Some(buttons))
+    }
+    pub fn take_camera_cycles(&mut self) -> u32 {
+        std::mem::take(&mut self.camera_cycles)
     }
 
     pub fn initial_render_settings(&self) -> crate::render_settings::Settings {
@@ -955,7 +1011,7 @@ impl Desktop {
         self.present_frames += 1;
         self.present_ns += start.elapsed().as_nanos();
         {
-            if let Some(audio) = &self.audio {
+            if let Some(audio) = &mut self.audio {
                 // Bound latency after stalls; never allow an unlimited audio backlog.
                 if audio.size() > 65536 / 5 * 4 {
                     audio.clear();
@@ -987,6 +1043,75 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires isolated SDL dummy driver"]
+    fn camera_shortcut_real_sdl() {
+        use super::*;
+        use crate::control_context::Context;
+        use crate::controls::Binding;
+        use sdl2::keyboard::{Mod, Scancode};
+        let root = std::env::temp_dir().join(format!("camera-shortcut-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut ui = Desktop::new(root.join("controls.cfg")).unwrap();
+        let events = ui._sdl.event().unwrap();
+        let mut settings = Default::default();
+        let push = |code, repeat| {
+            events
+                .push_event(Event::KeyDown {
+                    timestamp: 0,
+                    window_id: 0,
+                    keycode: Keycode::from_scancode(code),
+                    scancode: Some(code),
+                    keymod: Mod::NOMOD,
+                    repeat,
+                })
+                .unwrap()
+        };
+        push(Scancode::V, false);
+        ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 1);
+        assert_eq!(ui.take_camera_cycles(), 0);
+        push(Scancode::V, true);
+        ui.poll(&mut settings, true, Context::Vehicle).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 0);
+        push(Scancode::V, false);
+        ui.poll(&mut settings, true, Context::Vehicle).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 1);
+        for context in [Context::Menu, Context::OnFoot] {
+            ui.paused = context == Context::OnFoot;
+            push(Scancode::V, false);
+            ui.poll(&mut settings, true, context).unwrap();
+            assert_eq!(ui.take_camera_cycles(), 0);
+        }
+        ui.paused = false;
+        ui.focused = false;
+        push(Scancode::V, false);
+        ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 0);
+        ui.focused = true;
+        ui.controls
+            .rebind(3, 0, Some(Binding::Key(Scancode::C)), false)
+            .unwrap();
+        push(Scancode::V, false);
+        ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 0);
+        push(Scancode::C, false);
+        ui.poll(&mut settings, true, Context::Vehicle).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 1);
+        ui.controls.toggle_mode().unwrap();
+        push(Scancode::C, false);
+        ui.poll(&mut settings, false, Context::OnFoot).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 1); // Classic controls / Original renderer too.
+        ui.open_options(settings, false);
+        push(Scancode::C, false);
+        ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 0);
+        ui.menu = None;
+        ui.release_input = true;
+        push(Scancode::C, false);
+        ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        assert_eq!(ui.take_camera_cycles(), 0);
+    }
     #[test]
     #[ignore = "requires USA ROM, isolated SDL driver and diagnostic directory"]
     fn island_menu_backgrounds_refresh_pause_and_cached_options() {
@@ -1433,6 +1558,74 @@ mod tests {
         assert_eq!(pixel(0, 0), (false, false));
     }
     use sdl2::keyboard::Scancode;
+    #[test]
+    #[ignore = "run alone with SDL dummy video/audio to verify Enhanced menu sound on pause"]
+    fn enhanced_menu_audio_real_sdl() {
+        use crate::control_context::Context;
+        let root = std::env::temp_dir().join(format!("menu-sound-sdl-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut ui = Desktop::new(root.join("controls.cfg")).unwrap();
+        ui.set_menu_skin(&std::fs::read("roms/usa.gba").unwrap(), None)
+            .unwrap();
+        assert!(ui.menu_click.as_ref().unwrap().iter().any(|v| *v != 0));
+        let events = ui._sdl.event().unwrap();
+        let mut settings = ui.initial_render_settings();
+        let send =
+            |ui: &mut Desktop, settings: &mut crate::render_settings::Settings, key: Keycode| {
+                events
+                    .push_event(Event::KeyDown {
+                        timestamp: 0,
+                        window_id: ui.canvas.window().id(),
+                        keycode: Some(key),
+                        scancode: None,
+                        keymod: sdl2::keyboard::Mod::NOMOD,
+                        repeat: false,
+                    })
+                    .unwrap();
+                ui.poll(settings, true, Context::OnFoot).unwrap();
+            };
+        ui.paused = true;
+        send(&mut ui, &mut settings, Keycode::Escape);
+        let first = ui.audio.as_mut().unwrap().test_state();
+        assert_eq!(first.0, 1);
+        assert!(first.1 > 0);
+        for _ in 0..8 {
+            ui.poll(&mut settings, true, Context::OnFoot).unwrap();
+        }
+        let later = ui.audio.as_mut().unwrap().test_state();
+        assert!(
+            later.1 < first.1,
+            "audio callback must continue while paused"
+        );
+        for k in [
+            Keycode::Down,
+            Keycode::Return,
+            Keycode::Escape,
+            Keycode::Escape,
+        ] {
+            send(&mut ui, &mut settings, k);
+        }
+        assert!(ui.menu.is_none());
+        assert!(ui.paused());
+        assert_eq!(ui.audio.as_mut().unwrap().test_state().0, 5);
+        let mut source = gba_core::MemMap::new(Vec::new());
+        source.ewram[0x3e4] = 1;
+        for level in [1, 2, 3] {
+            source.ewram[0x10c61] = level;
+            ui.sync_menu_region(&source);
+            assert_eq!(ui.sfx_volume, level);
+        }
+        source.ewram[0x10c61] = 0;
+        ui.sync_menu_region(&source);
+        assert_eq!(ui.audio.as_mut().unwrap().test_state().1, 0);
+        send(&mut ui, &mut settings, Keycode::Escape);
+        assert!(ui.menu.is_some());
+        assert_eq!(ui.audio.as_mut().unwrap().test_state().0, 5);
+        drop(events);
+        drop(ui);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     #[ignore = "run alone with SDL dummy/software to verify native menu output and persistence"]
     fn options_menu_real_sdl() {
