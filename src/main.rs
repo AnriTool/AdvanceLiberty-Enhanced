@@ -53,6 +53,9 @@ mod options;
 mod pickup_probe;
 mod rect_windows;
 mod render_settings;
+mod replay;
+#[cfg(feature = "desktop")]
+mod replay_panel;
 mod rom_profile;
 mod save;
 mod scene_replay;
@@ -72,6 +75,7 @@ struct Counters {
     failed: HashMap<u32, u64>,
 }
 thread_local! { static COUNTERS: RefCell<Counters> = RefCell::new(Counters::default()); }
+thread_local! { static VIEWING_REPLAY: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static AUDIT: RefCell<native_audit::Audit> = RefCell::new(native_audit::Audit::default()); }
 thread_local! { static RESCUE: RefCell<HashMap<u32, Vec<BlockFn>>> = RefCell::new(HashMap::new()); }
 thread_local! { static ACTIVE_API: Cell<*const RtApi> = const { Cell::new(std::ptr::null()) }; }
@@ -93,7 +97,9 @@ impl Drop for ApiScope<'_> {
     }
 }
 fn audit(reason: &'static str, m: &Machine) {
-    AUDIT.with(|a| a.borrow_mut().record(reason, m));
+    if !VIEWING_REPLAY.with(Cell::get) {
+        AUDIT.with(|a| a.borrow_mut().record(reason, m));
+    }
 }
 extern "C" fn guard(m: *mut c_void, addr: u32, len: u32, hash: u64) -> u32 {
     let result = (RT_API.guard)(m, addr, len, hash);
@@ -205,8 +211,14 @@ fn coverage(native_dispatches: u64, misses: u64, rejected: u64) -> coverage::Cov
         }
     })
 }
+#[cfg(all(test, feature = "desktop"))]
+thread_local! { static REPLAY_TEST_DRIVER: RefCell<Option<Box<dyn FnMut(&Machine, &mut desktop::Desktop)>>> = RefCell::new(None); }
+#[cfg(all(test, feature = "desktop"))]
+thread_local! { static REPLAY_TEST_FAST: Cell<bool> = const { Cell::new(false) }; }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    run_with_args(std::env::args().skip(1).collect())
+}
+fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let enhanced_sound = if let Some(index) = args.iter().position(|s| s == "--enhanced-audio") {
         args.remove(index);
         true
@@ -430,6 +442,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    let replay_directory = if let Some(index) = args.iter().position(|a| a == "--replays") {
+        if index + 1 >= args.len() {
+            return Err("--replays requires a directory".into());
+        }
+        let path = std::path::PathBuf::from(args.remove(index + 1));
+        args.remove(index);
+        path
+    } else {
+        std::env::current_dir()?.join("replays")
+    };
     let session_path = if let Some(index) = args.iter().position(|s| s == "--record-session") {
         if index + 1 >= args.len() {
             return Err("--record-session requires a new directory".into());
@@ -619,7 +641,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Recorded drop lifetime must be 1..300 seconds".into());
     }
     let mut drop_policy = drop_seconds.map(drop_lifetime::Policy::new);
-    let drop_start = drop_start_requested
+    let mut drop_start = drop_start_requested
         .or_else(|| {
             if args[1] == "-" {
                 return None;
@@ -637,7 +659,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if drop_start != 0 && drop_seconds.is_none() {
         return Err("--drop-lifetime-after-frame requires --drop-lifetime".into());
     }
-    let preserve_cash = drop_seconds.is_some()
+    let mut preserve_cash = drop_seconds.is_some()
         || preserve_cash_requested
         || args[1] != "-"
             && fs::read_to_string(std::path::Path::new(&args[1]).with_file_name("info.txt"))
@@ -914,10 +936,63 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "frame,framebuffer_upstream_hash\n"
     });
+    let mut replay_recording: Option<replay::Recording> = None;
+    let mut playback: Option<replay::Playback> = None;
+    let mut live: Option<Box<replay::Live>> = None;
+    let mut suspended_session = None;
+    let mut replay_counts = None;
+    let mut replay_language_changes = Vec::new();
+    macro_rules! restore_game {
+        () => {
+            if let Some(state) = live.take() {
+                let replay::Live {
+                    machine,
+                    audio,
+                    drops,
+                    language: old_language,
+                    preview,
+                    settings,
+                    preserve_cash: cash,
+                    drop_start: start,
+                } = *state;
+                m = machine;
+                enhanced_audio = audio;
+                drop_policy = drops;
+                language = old_language;
+                camera_preview = preview;
+                render_settings = settings;
+                preserve_cash = cash;
+                drop_start = start;
+                playback = None;
+                recording = suspended_session.take();
+                if let Some((counts, entries, old_misses, rejected, cash)) = replay_counts.take() {
+                    COUNTERS.with(|c| {
+                        c.replace(counts);
+                    });
+                    selected = entries;
+                    misses = old_misses;
+                    rejected_fallback = rejected;
+                    cash_retained = cash;
+                }
+                VIEWING_REPLAY.with(|flag| flag.set(false));
+                #[cfg(feature = "desktop")]
+                if let Some(ui) = desktop.as_mut() {
+                    ui.replay_mode(false);
+                    if !_original_menus {
+                        ui.set_menu_skin(&m.bus.rom, language.as_ref())?;
+                    }
+                }
+            }
+        };
+    }
     let start = std::time::Instant::now();
-    while m.bus.frames < frames {
-        if let Some(policy) = drop_policy.as_mut().filter(|_| m.bus.frames >= drop_start) {
-            policy.update(&mut m);
+    while m.bus.frames < frames || playback.is_some() {
+        if playback
+            .as_ref()
+            .is_some_and(|p| p.cursor == p.frames.len())
+        {
+            restore_game!();
+            continue;
         }
         mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
@@ -963,12 +1038,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ui) = desktop.as_mut() {
             ui.sync_cheats(&m.bus);
             ui.sync_menu_region(&m.bus);
+            #[cfg(test)]
+            REPLAY_TEST_DRIVER.with(|driver| {
+                if let Some(driver) = driver.borrow_mut().as_mut() {
+                    driver(&m, ui);
+                }
+            });
             let Some(keys) = ui.poll(&mut render_settings, preview_enabled, control_context)?
             else {
                 break;
             };
             let cycles = ui.take_camera_cycles();
-            if args[1] == "-" {
+            if args[1] == "-" && playback.is_none() {
                 for _ in 0..cycles {
                     if let Some(mode) = camera_mode::cycle(&mut m.bus) {
                         ui.play_menu_click();
@@ -994,6 +1075,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             return Err("Live language changes require native mode".into());
                         }
                         localization::change_live(&mut m, &rom, &mut language, bytes.clone())?;
+                        if replay_recording.is_some() {
+                            replay_language_changes.push(match bytes.clone() {
+                                Some(bytes) => replay::LanguageChange::Pack(bytes),
+                                None => replay::LanguageChange::Original,
+                            });
+                        }
                         if let Some(recording) = recording.as_mut() {
                             recording.language_change(before, bytes.as_deref())?;
                         }
@@ -1015,6 +1102,130 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if args[1] == "-" {
                 m.bus.keys = keys;
             }
+            if let Some(command) = ui.replays.command.take() {
+                use replay::Command;
+                if matches!(command, Command::Stop) {
+                    restore_game!();
+                    continue;
+                }
+                if matches!(
+                    command,
+                    Command::Record | Command::Latest | Command::Play(_)
+                ) {
+                    let was_recording = replay_recording.is_some();
+                    if let Some(clip) = replay_recording.take() {
+                        match clip.save(&replay_directory, &rom) {
+                            Ok(Some(path)) => {
+                                eprintln!("Replay saved: {}", path.display());
+                                ui.replays.notice("Replay saved".into());
+                            }
+                            Ok(None) => ui.replays.notice("Empty replay discarded".into()),
+                            Err(error) => {
+                                eprintln!("Cannot save replay: {error}");
+                                ui.replays.notice(format!("Replay save failed: {error}"));
+                            }
+                        }
+                        ui.replays.recording = false;
+                    }
+                    if matches!(command, Command::Record) {
+                        if !was_recording {
+                            match replay::Recording::start(
+                                &m,
+                                &rom,
+                                &enhanced_audio,
+                                &drop_policy,
+                                &language,
+                                render_settings,
+                                preserve_cash,
+                                drop_start,
+                            ) {
+                                Ok(clip) => {
+                                    replay_language_changes.clear();
+                                    replay_recording = Some(clip);
+                                    ui.replays.recording = true;
+                                }
+                                Err(error) => {
+                                    ui.replays.notice(format!("Cannot record replay: {error}"))
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if matches!(command, Command::Browse) {
+                    match replay::list(&replay_directory) {
+                        Ok(entries) => ui.replays.entries(entries),
+                        Err(error) => ui.replays.notice(format!("Cannot list replays: {error}")),
+                    }
+                    continue;
+                }
+                let path = match command {
+                    Command::Play(path) => Some(path),
+                    Command::Latest => match replay::list(&replay_directory) {
+                        Ok(entries) => entries.first().map(|e| e.path.clone()),
+                        Err(error) => {
+                            ui.replays.notice(error.to_string());
+                            None
+                        }
+                    },
+                    _ => None,
+                };
+                if let Some(path) = path {
+                    // Validate every file and prepare all fallible objects before moving live state.
+                    let prepared = (|| -> Result<_, Box<dyn std::error::Error>> {
+                        let (mut initial, playback) = replay::load(&path, &rom)?;
+                        let clip_language = initial.language.take();
+                        let preview = if preview_enabled {
+                            Some(camera_preview::Preview::new(None)?)
+                        } else {
+                            None
+                        };
+                        Ok((initial, playback, clip_language, preview))
+                    })();
+                    match prepared {
+                        Ok((initial, clip, clip_language, preview)) => {
+                            let state = replay::Live {
+                                machine: std::mem::replace(&mut m, initial.machine),
+                                audio: std::mem::replace(&mut enhanced_audio, initial.audio),
+                                drops: std::mem::replace(&mut drop_policy, initial.drops),
+                                language: std::mem::replace(&mut language, clip_language),
+                                preview: std::mem::replace(&mut camera_preview, preview),
+                                settings: std::mem::replace(&mut render_settings, initial.settings),
+                                preserve_cash: std::mem::replace(
+                                    &mut preserve_cash,
+                                    initial.preserve_cash,
+                                ),
+                                drop_start: std::mem::replace(&mut drop_start, initial.drop_start),
+                            };
+                            live = Some(Box::new(state));
+                            playback = Some(clip);
+                            suspended_session = recording.take();
+                            let empty = vec![0; selected.len()];
+                            replay_counts = Some((
+                                COUNTERS.with(|c| std::mem::take(&mut *c.borrow_mut())),
+                                std::mem::replace(&mut selected, empty),
+                                std::mem::take(&mut misses),
+                                std::mem::take(&mut rejected_fallback),
+                                std::mem::take(&mut cash_retained),
+                            ));
+                            VIEWING_REPLAY.with(|flag| flag.set(true));
+                            ui.replay_mode(true);
+                            if !_original_menus {
+                                ui.set_menu_skin(&m.bus.rom, language.as_ref())?;
+                            }
+                            eprintln!("Replay started: {}", path.display());
+                        }
+                        Err(error) => {
+                            eprintln!("Cannot play replay: {error}");
+                            ui.replays.notice(format!("Cannot play replay: {error}"));
+                        }
+                    }
+                } else {
+                    ui.replays
+                        .notice("No saved replay. Press F2 to record.".into());
+                }
+                continue;
+            }
             if ui.paused() {
                 ui.present_paused(textures.as_mut().unwrap())?;
                 ui.update_status(
@@ -1027,6 +1238,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 aim_angle = ui.aim_angle(&m.bus);
                 aim_presentation = ui.mouse_aim_enabled();
             }
+        }
+        if let Some(player) = playback.as_ref() {
+            let packet = &player.frames[player.cursor];
+            m.bus.keys = packet.keys;
+            aim_angle = packet.aim;
+            aim_presentation = packet.aim_presentation;
+            render_settings = packet.settings;
+            camera_mode::set(&mut m.bus, packet.camera)?;
+            for change in &packet.language {
+                let bytes = match change {
+                    replay::LanguageChange::Original => None,
+                    replay::LanguageChange::Pack(bytes) => Some(bytes.clone()),
+                };
+                localization::change_live(&mut m, &rom, &mut language, bytes)?;
+                #[cfg(feature = "desktop")]
+                if !_original_menus {
+                    if let Some(ui) = desktop.as_mut() {
+                        ui.set_menu_skin(&m.bus.rom, language.as_ref())?;
+                    }
+                }
+            }
+        }
+        let mut replay_packet = replay::Frame {
+            keys: m.bus.keys,
+            aim: aim_angle,
+            aim_presentation,
+            camera: m.bus.ewram[0x10c66].min(3),
+            settings: render_settings,
+            language: std::mem::take(&mut replay_language_changes),
+            checksum: 0,
+        };
+        if let Some(policy) = drop_policy.as_mut().filter(|_| m.bus.frames >= drop_start) {
+            policy.update(&mut m);
         }
         // Resolve and validate the current actor on every host frame. Hooks
         // cannot affect vehicle physics or any other object's direction.
@@ -1200,7 +1444,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let defer_save_write = desktop.as_ref().is_some_and(|ui| ui.saving_game_for_exit());
         #[cfg(not(feature = "desktop"))]
         let defer_save_write = false;
-        if !defer_save_write {
+        if !defer_save_write && playback.is_none() {
             if let Some(save) = save.as_mut() {
                 save.update(&m, false)?;
             }
@@ -1276,7 +1520,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         m.bus.audio_buf.clear();
+        if replay_recording.is_some() || playback.is_some() {
+            replay_packet.checksum = replay::checksum(&m);
+        }
+        if let Some(clip) = replay_recording.as_mut() {
+            clip.push(replay_packet.clone());
+        }
+        if replay_recording.as_ref().is_some_and(|clip| clip.full()) {
+            if let Some(clip) = replay_recording.take() {
+                clip.save(&replay_directory, &rom)?;
+            }
+            #[cfg(feature = "desktop")]
+            if let Some(ui) = desktop.as_mut() {
+                ui.replays.recording = false;
+                ui.replays.notice("Replay saved (one-hour limit)".into());
+            }
+        }
+        if let Some(player) = playback.as_mut() {
+            if player.frames[player.cursor].checksum != replay_packet.checksum {
+                eprintln!("Replay diverged at frame {}", player.cursor);
+                #[cfg(feature = "desktop")]
+                if let Some(ui) = desktop.as_mut() {
+                    ui.replays
+                        .notice("Replay stopped: simulation mismatch".into());
+                }
+                player.cursor = player.frames.len();
+            } else {
+                player.cursor += 1;
+            }
+        }
     }
+    // Window close during playback must commit only the suspended live save.
+    #[allow(unused_assignments)]
+    {
+        restore_game!();
+    }
+    let replay_save_result = if let Some(clip) = replay_recording.take() {
+        clip.save(&replay_directory, &rom).map(|_| ())
+    } else {
+        Ok(())
+    };
     if let Some(audio) = audio_output.as_mut() {
         use std::io::Write;
         audio.flush()?;
@@ -1317,6 +1600,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
         recording.finish(m.bus.frames, native, interpreted)?;
     }
+    // Commit live progress and finish diagnostics even if writing the replay failed.
+    replay_save_result?;
     #[cfg(feature = "desktop")]
     if let Some(ui) = desktop.as_mut() {
         // Force a final title update even for short diagnostic replays.
@@ -1484,5 +1769,172 @@ mod tests {
         assert_eq!(guard(ptr, 0x03000000, 4, expected), 1);
         assert_eq!(interp(ptr), 0x08000004);
         COUNTERS.with(|c| assert_eq!(c.borrow().internal, 1));
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod replay_runtime_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires local USA ROM, native libraries and recorded input"]
+    fn native_record_play_browser_abort_and_live_save_restoration() {
+        use sdl2::{
+            event::Event,
+            keyboard::{Keycode, Mod, Scancode},
+        };
+        use std::{path::PathBuf, rc::Rc};
+        let root = PathBuf::from("artifacts/replay-integration").join(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .to_string(),
+        );
+        fs::create_dir_all(&root).unwrap();
+        let fixture = PathBuf::from("data/sessions/session-b9d955bed15e4c618fda627f01edc5aa");
+        let save = root.join("test.sav");
+        fs::copy(fixture.join("initial.sav"), &save).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read("native/usa/manifest.json").unwrap()).unwrap();
+        let mut args = vec![
+            "roms/usa.gba".into(),
+            fixture.join("input.gba-input").to_str().unwrap().into(),
+            "2500".into(),
+            "-".into(),
+            "play".into(),
+        ];
+        args.extend(
+            manifest["libraries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["path"].as_str().unwrap().into()),
+        );
+        args.extend([
+            "--camera-preview".into(),
+            "--enhanced-audio".into(),
+            "--drop-lifetime".into(),
+            "30".into(),
+            "--save".into(),
+            save.to_str().unwrap().into(),
+            "--controls".into(),
+            root.join("controls.cfg").to_str().unwrap().into(),
+            "--replays".into(),
+            root.join("replays").to_str().unwrap().into(),
+            "--record-session".into(),
+            root.join("session").to_str().unwrap().into(),
+        ]);
+        let phases = Rc::new(Cell::new(0));
+        let phase = phases.clone();
+        let mut saved = Vec::new();
+        let mut saved_calls = 0;
+        let mut end_frame = 0;
+        REPLAY_TEST_FAST.with(|fast| fast.set(true));
+        REPLAY_TEST_DRIVER.with(|driver| {
+            *driver.borrow_mut() = Some(Box::new(move |m, ui| {
+                let key = match phase.get() {
+                    0 if m.bus.frames >= 1450
+                        && control_context::detect(&m.bus) != control_context::Context::Menu =>
+                    {
+                        phase.set(1);
+                        end_frame = m.bus.frames + 80;
+                        Some(Keycode::F2)
+                    }
+                    1 if ui.replays.recording && m.bus.frames >= end_frame => {
+                        saved = serde_json::to_vec(m).unwrap();
+                        saved_calls = COUNTERS.with(|c| c.borrow().calls);
+                        phase.set(2);
+                        Some(Keycode::F3)
+                    }
+                    2 if !ui.replays.playing && !ui.replays.recording => {
+                        assert_eq!(m.bus.frames, end_frame);
+                        assert_eq!(
+                            COUNTERS.with(|c| c.borrow().calls),
+                            saved_calls,
+                            "diagnostic native counts restored"
+                        );
+                        assert_eq!(
+                            serde_json::to_vec(m).unwrap(),
+                            saved,
+                            "natural end restores exact live machine"
+                        );
+                        phase.set(3);
+                        Some(Keycode::F4)
+                    }
+                    3 if ui.replays.visible => {
+                        phase.set(4);
+                        Some(Keycode::Return)
+                    }
+                    4 if ui.replays.playing && m.bus.frames >= end_frame - 60 => {
+                        phase.set(5);
+                        Some(Keycode::Escape)
+                    }
+                    5 if !ui.replays.playing => {
+                        assert_eq!(
+                            serde_json::to_vec(m).unwrap(),
+                            saved,
+                            "Escape restores exact live machine"
+                        );
+                        phase.set(6);
+                        Some(Keycode::F3)
+                    }
+                    6 if ui.replays.playing && m.bus.frames >= end_frame - 60 => {
+                        phase.set(7);
+                        Some(Keycode::Return)
+                    }
+                    7 if !ui.replays.playing => {
+                        assert_eq!(
+                            serde_json::to_vec(m).unwrap(),
+                            saved,
+                            "Enter restores exact live machine"
+                        );
+                        phase.set(8);
+                        Some(Keycode::F3)
+                    }
+                    8 if ui.replays.playing && m.bus.frames >= end_frame - 60 => {
+                        phase.set(9);
+                        ui.push_test_quit();
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    ui.push_test_event(Event::KeyDown {
+                        timestamp: 0,
+                        window_id: 0,
+                        keycode: Some(key),
+                        scancode: Scancode::from_keycode(key),
+                        keymod: Mod::NOMOD,
+                        repeat: false,
+                    });
+                }
+            }))
+        });
+        let result = run_with_args(args);
+        REPLAY_TEST_DRIVER.with(|driver| driver.borrow_mut().take());
+        REPLAY_TEST_FAST.with(|fast| fast.set(false));
+        result.unwrap();
+        assert_eq!(
+            phases.get(),
+            9,
+            "full recording/playback/browser/abort sequence completed"
+        );
+        assert_eq!(replay::list(&root.join("replays")).unwrap().len(), 1);
+        assert_eq!(
+            fs::read(&save).unwrap(),
+            fs::read(fixture.join("initial.sav")).unwrap(),
+            "replay never commits its own save"
+        );
+        let frames = fs::read_to_string(root.join("session/frames.csv")).unwrap();
+        let numbers: Vec<u64> = frames
+            .lines()
+            .skip(1)
+            .map(|l| l.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert!(
+            numbers.windows(2).all(|p| p[1] == p[0] + 1),
+            "diagnostic session excludes replay frames"
+        );
+        println!("Replay integration evidence: {}", root.display());
     }
 }

@@ -5,6 +5,7 @@ param(
     [string]$LanguagePack,
     [switch]$SkipBuild,
     [switch]$NoRecord,
+    [switch]$RecordSession,
     [string]$SessionDirectory,
     [switch]$OriginalRenderer,
     [switch]$OriginalMenus,
@@ -16,7 +17,7 @@ param(
     [uint64]$Frames = 0
 )
 . (Join-Path $PSScriptRoot 'Project.ps1')
-if ($NoRecord -and $SessionDirectory) { throw 'Choose -NoRecord or -SessionDirectory.' }
+if ($NoRecord -and ($SessionDirectory -or $RecordSession)) { throw 'Choose -NoRecord or -RecordSession/-SessionDirectory.' }
 $Rom = Get-GameRom $Rom
 $libraries = Get-NativeLibraries
 $exe = Get-GameExecutable -SkipBuild:$SkipBuild
@@ -27,7 +28,7 @@ $ControlsPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFro
 foreach ($path in @($SavePath, $ControlsPath)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
 }
-$runtimeOptions = @('--camera-preview')
+$runtimeOptions = @('--camera-preview', '--replays', (Join-Path $ProjectRoot 'replays'))
 if ($EnhancedAudio -and !$OriginalAudio) { $runtimeOptions += '--enhanced-audio' }
 if ($PreserveCash) { $runtimeOptions += '--preserve-cash' }
 if ($DropLifetime -gt 0) { $runtimeOptions += @('--drop-lifetime', "$DropLifetime") }
@@ -35,7 +36,7 @@ if ($OriginalMenus) { $runtimeOptions += '--original-menus' }
 if ($LanguagePack) { $runtimeOptions += @('--language-pack', (Resolve-Path -LiteralPath $LanguagePack).Path) }
 if ($OriginalRenderer) { $runtimeOptions += '--original-renderer' }
 if ($AffineTextures) { $runtimeOptions += '--affine-textures' }
-if (!$NoRecord) {
+if ($RecordSession -or $SessionDirectory) {
     if (!$SessionDirectory) { $SessionDirectory = Join-Path $ProjectRoot ('data/sessions/session-' + [Guid]::NewGuid().ToString('N')) }
     $SessionDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SessionDirectory)
     New-Item -ItemType Directory -Force -Path (Split-Path $SessionDirectory -Parent) | Out-Null
@@ -44,6 +45,6 @@ if (!$NoRecord) {
 }
 Write-Host "Save: $SavePath"
 Write-Host "Controls: $ControlsPath"
-Write-Host 'Esc / Pause: game menu. Enhanced Options: PC settings. F6: renderer; F8: controls; F11: fullscreen.'
+Write-Host 'Esc / Pause: game menu. Enhanced Options: PC settings. F2: record; F3: latest replay; F4: replay list; F6: renderer; F11: fullscreen.'
 $exitCode = Invoke-GameRuntime -Executable $exe -Arguments (@($Rom, '-', "$Frames", '-', 'play') + @($libraries) + @('--save', $SavePath, '--controls', $ControlsPath) + $runtimeOptions)
 if ($exitCode -ne 0) { throw "Game exited with error $exitCode." }

@@ -19,7 +19,7 @@ const DUTY: [[i16; 8]; 4] = [
     [-8, 8, 8, 8, 8, 8, 8, -8],
 ];
 
-#[derive(Default, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Copy)]
 struct Envelope {
     volume: u8,
     increase: bool,
@@ -51,7 +51,7 @@ impl Envelope {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Copy)]
 struct Square {
     on: bool,
     duty: usize,
@@ -126,7 +126,7 @@ impl Square {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 pub struct Apu {
     sq: [Square; 2],
     // Wave channel.
@@ -149,6 +149,12 @@ pub struct Apu {
 }
 
 impl Apu {
+    pub(crate) fn valid_snapshot(&self) -> bool {
+        self.sq
+            .iter()
+            .all(|s| s.duty < 4 && s.phase < 8 && s.sweep_shift <= 7)
+    }
+
     /// Handle a PSG register byte write.
     pub fn write8(&mut self, io: &[u8], off: usize, value: u8) {
         match off {

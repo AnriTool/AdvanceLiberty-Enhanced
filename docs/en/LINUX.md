@@ -64,7 +64,7 @@ checkout has no execution bits. Invoking them with `bash` works either way.
 
 New development profiles retain Enhanced graphics/audio/controls, widescreen,
 fullscreen, mouse aiming and the 30-second drop lifetime. For diagnostics,
-`bash play.sh --frames 120 --no-record` limits the run.
+`bash play.sh --frames 120` limits the run.
 
 ## Coverage and replay
 

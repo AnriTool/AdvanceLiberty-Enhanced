@@ -5,6 +5,7 @@
 //! correction is needed. Unity output gain keeps comparisons level matched.
 use std::collections::VecDeque;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Output {
     fifo: [FifoInterp; 2],
     events: [VecDeque<(i8, u32)>; 2],
@@ -14,6 +15,20 @@ pub struct Output {
     samples: Vec<i16>,
 }
 impl Output {
+    pub fn valid_snapshot(&self) -> bool {
+        self.psg.table.len() == (SINC_PHASES + 1) * SINC_TAPS
+            && self.psg.frac >= 0.0
+            && self.psg.frac < 1.0
+            && self.psg.ratio == 1.0
+            && self.fifo.iter().all(|f| {
+                f.table.len() == (SINC_PHASES + 1) * SINC_TAPS
+                    && f.fut.len() == SINC_TAPS * 2
+                    && f.pos < SINC_TAPS * 2
+                    && f.out_step == 256.0
+                    && f.period >= 1.0
+            })
+    }
+
     pub fn new() -> Self {
         Self {
             fifo: std::array::from_fn(|_| FifoInterp::new(65536.0)),
@@ -119,6 +134,7 @@ fn build_sinc_table(fc: f64) -> Vec<f32> {
 
 /// One-pole DC blocker, fc ~ 10 Hz: y[n] = x[n] - x[n-1] + r*y[n-1].
 /// Kills bias offsets, held-DAC ledges, and underrun pops.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct DcBlock {
     r: f32,
     x1: f32,
@@ -146,6 +162,7 @@ impl DcBlock {
 /// stereo queue. Band-limits to the narrower of the two Nyquists, so
 /// downsampling to a 44.1/48 kHz device does not fold images the way
 /// the zero-order-hold path does. Used for the PSG grid stream.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct SincResampler {
     table: Vec<f32>,
     /// Last SINC_TAPS source samples per side, oldest first.
@@ -208,11 +225,12 @@ impl SincResampler {
 /// (reference-trace comparison on a square-timbre chime). Channels
 /// driven above the device rate degrade gracefully: overlapping
 /// deposits sum to a proper low-pass.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct FifoInterp {
     /// Windowed-sinc impulse table (rows sum to 1 = unit step).
     table: Vec<f32>,
     /// Future deposits, ring-indexed by output sample.
-    fut: [f32; SINC_TAPS * 2],
+    fut: Vec<f32>,
     pos: usize,
     /// Leaky integrator state. The tiny leak only bounds drift; real
     /// output coupling is the shared DC blocker downstream.
@@ -231,7 +249,7 @@ impl FifoInterp {
     fn new(out_hz: f64) -> FifoInterp {
         FifoInterp {
             table: build_sinc_table(0.45),
-            fut: [0.0; SINC_TAPS * 2],
+            fut: vec![0.0; SINC_TAPS * 2],
             pos: 0,
             y: 0.0,
             level: 0.0,

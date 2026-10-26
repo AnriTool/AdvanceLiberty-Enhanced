@@ -30,3 +30,5 @@ consistent. Original third-party license texts remain unchanged.
 - [Money, weapon and corpse lifetimes](DROP_LIFETIME.md)
 - [Original cheat panel](CHEATS.md)
 - [Language packs and fonts](LOCALIZATION.md)
+
+- [Replays and opt-in sessions](REPLAYS.md)

@@ -60,8 +60,9 @@ pub struct ColorDefinition {
     pub glyphs: BTreeMap<String, Vec<String>>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ColorFont {
+    #[serde(with = "replay_tiles")]
     pub tiles: Vec<[u8; 256]>,
     pub widths: Vec<u8>,
 }
@@ -222,7 +223,7 @@ pub fn private_codes() -> Vec<u8> {
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Font {
     width: usize,
     height: usize,
@@ -449,5 +450,30 @@ mod tests {
             r##"{"width":1,"height":1,"glyphs":{"x":["#"],"x":["."]}}"##
         )
         .is_err());
+    }
+}
+
+// Serde supports fixed arrays up to 32; font tiles are 16x16 indexed pixels.
+mod replay_tiles {
+    pub fn serialize<S: serde::Serializer>(
+        tiles: &[[u8; 256]],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(
+            &tiles.iter().map(|t| t.as_slice()).collect::<Vec<_>>(),
+            serializer,
+        )
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<[u8; 256]>, D::Error> {
+        let tiles = <Vec<Vec<u8>> as serde::Deserialize>::deserialize(deserializer)?;
+        tiles
+            .into_iter()
+            .map(|tile| {
+                tile.try_into()
+                    .map_err(|_| serde::de::Error::custom("Invalid font tile"))
+            })
+            .collect()
     }
 }

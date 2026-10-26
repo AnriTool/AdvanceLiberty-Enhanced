@@ -15,7 +15,7 @@
 //! `10 addr data64 stop` = write. The address width (6 vs 14 bits) is how
 //! 512-byte and 8-KB parts differ; we infer it from the request length.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupKind {
     None,
     Sram,
@@ -43,7 +43,7 @@ pub fn detect(rom: &[u8]) -> BackupKind {
 
 // ---- Flash ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 enum FlashState {
     Ready,
     Cmd1,  // saw AA @ 5555
@@ -55,7 +55,7 @@ enum FlashState {
     Bank,  // next write to 0x0E000000 selects the bank
 }
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Flash {
     pub data: Vec<u8>,
     state: FlashState,
@@ -65,6 +65,11 @@ pub struct Flash {
 }
 
 impl Flash {
+    pub(crate) fn valid_snapshot(&self) -> bool {
+        self.data.len() == if self.two_banks { 0x20000 } else { 0x10000 }
+            && self.bank < if self.two_banks { 2 } else { 1 }
+    }
+
     pub fn new(two_banks: bool) -> Flash {
         Flash {
             data: vec![0xFF; if two_banks { 0x2_0000 } else { 0x1_0000 }],
@@ -146,13 +151,13 @@ impl Flash {
 
 // ---- EEPROM ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 enum EepromMode {
     Idle,
     Reading { addr: usize, bit: u32 },
 }
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Eeprom {
     pub data: Vec<u8>,
     /// Bits accumulated from writes since the last completed request.
@@ -163,6 +168,15 @@ pub struct Eeprom {
 }
 
 impl Eeprom {
+    pub(crate) fn valid_snapshot(&self) -> bool {
+        self.data.len() == 0x2000
+            && self.in_bits.len() <= 81
+            && match self.mode {
+                EepromMode::Idle => true,
+                EepromMode::Reading { addr, bit } => addr < 0x2000 && bit <= 68,
+            }
+    }
+
     pub fn new() -> Eeprom {
         Eeprom {
             data: vec![0xFF; 0x2000],

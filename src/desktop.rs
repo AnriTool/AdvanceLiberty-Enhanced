@@ -65,6 +65,13 @@ impl<'a> Textures<'a> {
 pub struct Desktop {
     camera_cycles: u32,
     cheats: crate::cheats::Panel,
+    pub replays: crate::replay_panel::Panel,
+    replay_frontend: Option<(
+        crate::game_menu::Frontend,
+        crate::cheats::Panel,
+        bool,
+        Option<crate::options::Menu>,
+    )>,
     aim_pointer: Option<sdl2::mouse::Cursor>,
     arrow_pointer: Option<sdl2::mouse::Cursor>,
     pointer_is_aim: bool,
@@ -109,6 +116,19 @@ pub struct Desktop {
     fps: Option<f64>,
 }
 
+// Inspect SDL's byte array directly: its Rust scancode iterator converts
+// reserved numeric gaps into an enum, which newer Rust debug checks reject.
+fn any_key_down() -> bool {
+    unsafe {
+        let mut count = 0;
+        let keys = sdl2::sys::SDL_GetKeyboardState(&mut count);
+        !keys.is_null()
+            && count > 0
+            && std::slice::from_raw_parts(keys, count as usize)
+                .iter()
+                .any(|&key| key != 0)
+    }
+}
 fn rgb(pixel: u16) -> [u8; 3] {
     let expand = |v: u16| ((v << 3) | (v >> 2)) as u8;
     [
@@ -214,6 +234,8 @@ impl Desktop {
         Ok(Self {
             camera_cycles: 0,
             cheats: Default::default(),
+            replays: Default::default(),
+            replay_frontend: None,
             aim_pointer,
             arrow_pointer,
             pointer_is_aim: false,
@@ -260,7 +282,8 @@ impl Desktop {
     }
 
     pub fn paused(&self) -> bool {
-        self.menu.is_some()
+        self.replays.visible
+            || self.menu.is_some()
             || (!self.game_menu.save_exit_active() && (self.paused || !self.focused))
     }
     pub fn save_exit_needs_commit(&self) -> bool {
@@ -470,6 +493,24 @@ impl Desktop {
             if self.game_menu.save_exit_active() {
                 continue;
             }
+            if self.focused
+                && self.replays.event(
+                    &event,
+                    !self.paused()
+                        && context != crate::control_context::Context::Menu
+                        && self.game_menu.view.is_none()
+                        && !self.game_menu.busy(),
+                )
+            {
+                if !self.replays.visible {
+                    self.release_input = true;
+                }
+                continue;
+            }
+            if self.replays.command.is_some() {
+                continue;
+            }
+
             if self.menu.is_some() {
                 if !self.focused {
                     continue;
@@ -558,9 +599,7 @@ impl Desktop {
                 && !matches!(
                     event,
                     Event::KeyDown {
-                        keycode: Some(
-                            Keycode::P | Keycode::F5 | Keycode::F6 | Keycode::F8 | Keycode::F11
-                        ),
+                        keycode: Some(Keycode::P | Keycode::F5 | Keycode::F6 | Keycode::F11),
                         ..
                     } | Event::ControllerDeviceAdded { .. }
                         | Event::ControllerDeviceRemoved { .. }
@@ -650,14 +689,6 @@ impl Desktop {
                 }
                 Event::Quit { .. } => return Ok(None),
                 Event::KeyDown {
-                    keycode: Some(Keycode::F8),
-                    repeat: false,
-                    ..
-                } => match self.controls.toggle_mode() {
-                    Ok(()) => eprintln!("Controls: {:?}", self.controls.mode()),
-                    Err(error) => eprintln!("Controls unchanged: {error}"),
-                },
-                Event::KeyDown {
                     keycode: Some(Keycode::P),
                     repeat: false,
                     ..
@@ -715,7 +746,7 @@ impl Desktop {
         if releasing_input {
             // Consume held menu/capture buttons in both profiles and on gamepads.
             // Check releases even during P-pause, or its resume key stays blocked.
-            self.release_input = keyboard.pressed_scancodes().next().is_some()
+            self.release_input = any_key_down()
                 || mouse.pressed_mouse_buttons().next().is_some()
                 || self
                     .gamepad
@@ -733,6 +764,10 @@ impl Desktop {
             }
             self.next_frame = Instant::now();
             std::thread::sleep(Duration::from_millis(10));
+            return Ok(Some(0x3ff));
+        }
+        if self.replays.playing || self.replays.command.is_some() {
+            self.update_aim_pointer(false);
             return Ok(Some(0x3ff));
         }
         if self.cheats.captures_input() {
@@ -814,6 +849,43 @@ impl Desktop {
             buttons |= 8;
         }
         Ok(Some(buttons))
+    }
+    pub fn replay_mode(&mut self, playing: bool) {
+        if playing {
+            self.replays.clear_notice();
+            self.replay_frontend = Some((
+                std::mem::take(&mut self.game_menu),
+                std::mem::take(&mut self.cheats),
+                self.paused,
+                self.menu.take(),
+            ));
+            self.paused = false;
+        } else if let Some((frontend, cheats, paused, menu)) = self.replay_frontend.take() {
+            self.game_menu = frontend;
+            self.cheats = cheats;
+            self.paused = paused;
+            self.menu = menu;
+        }
+        self.replays.playing = playing;
+        self.replays.visible = false;
+        self.replays.command = None;
+        self.input_latch = Default::default();
+        self.release_input = true;
+        self.camera_cycles = 0;
+        self.aim_projection = None;
+        self.last_aim = None;
+        self.next_frame = Instant::now();
+        if let Some(audio) = &mut self.audio {
+            audio.clear();
+        }
+    }
+    #[cfg(test)]
+    pub fn push_test_event(&self, event: Event) {
+        self._sdl.event().unwrap().push_event(event).unwrap();
+    }
+    #[cfg(test)]
+    pub fn push_test_quit(&self) {
+        self.push_test_event(Event::Quit { timestamp: 0 });
     }
     pub fn take_camera_cycles(&mut self) -> u32 {
         std::mem::take(&mut self.camera_cycles)
@@ -907,6 +979,8 @@ impl Desktop {
     pub fn present_paused(&mut self, textures: &mut Textures<'_>) -> Result<(), String> {
         if let Some(menu) = &mut self.menu {
             menu.draw(&mut self.canvas, textures.menu()?)?;
+            self.replays.draw(&mut self.canvas)?;
+            self.canvas.present();
         } else {
             let (width, height) = self.frame_size;
             self.canvas
@@ -916,6 +990,7 @@ impl Desktop {
             self.canvas.clear();
             self.canvas
                 .copy(textures.sized(width, height)?, None, None)?;
+            self.replays.draw(&mut self.canvas)?;
             self.canvas.present();
         }
         Ok(())
@@ -1017,6 +1092,7 @@ impl Desktop {
         }
         self.cheats
             .draw(&mut self.canvas, self.menu_skin.as_deref())?;
+        self.replays.draw(&mut self.canvas)?;
         self.canvas.present();
         self.present_frames += 1;
         self.present_ns += start.elapsed().as_nanos();
@@ -1035,7 +1111,12 @@ impl Desktop {
             self.next_frame += FRAME_TIME;
             let now = Instant::now();
             if self.next_frame > now {
+                #[cfg(not(test))]
                 std::thread::sleep(self.next_frame - now);
+                #[cfg(test)]
+                if !crate::REPLAY_TEST_FAST.with(std::cell::Cell::get) {
+                    std::thread::sleep(self.next_frame - now);
+                }
             } else if now.duration_since(self.next_frame) > FRAME_TIME * 4 {
                 self.next_frame = now;
             }
@@ -2073,8 +2154,8 @@ mod tests {
         }
         assert_eq!(textures.allocations, 2);
         for (repeat, expected) in [
-            (false, crate::controls::Mode::Classic),
-            (true, crate::controls::Mode::Classic),
+            (false, crate::controls::Mode::Enhanced),
+            (true, crate::controls::Mode::Enhanced),
             (false, crate::controls::Mode::Enhanced),
         ] {
             events
@@ -2164,5 +2245,96 @@ mod tests {
                 .buttons(|_| false),
             0x3ff
         );
+    }
+}
+
+#[cfg(test)]
+mod replay_sdl_tests {
+    use super::*;
+    #[test]
+    #[ignore = "run alone with SDL dummy/software"]
+    fn replay_panel_real_sdl_renders_rec_and_browser_and_consumes_exit_keys() {
+        use crate::{
+            control_context::Context,
+            replay::{Command, Entry},
+        };
+        use sdl2::{
+            keyboard::{Keycode, Mod, Scancode},
+            pixels::PixelFormatEnum,
+        };
+        let root = std::path::PathBuf::from("artifacts").join(format!(
+            "replay-ui-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut ui = Desktop::new(root.join("controls.cfg")).unwrap();
+        let creator = ui.texture_creator();
+        let mut textures = Textures::new(&creator);
+        let bus = gba_core::MemMap::new(vec![0; 0x200]);
+        let image = vec![0x400; 720 * 480];
+        let mut settings = Default::default();
+        let capture = |ui: &Desktop, name| {
+            let (width, height) = ui.canvas.output_size().unwrap();
+            let pixels = ui.canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+            let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+            ppm.extend_from_slice(&pixels);
+            std::fs::write(root.join(name), ppm).unwrap();
+            pixels
+        };
+        ui.replays.recording = true;
+        ui.present(&bus, Some(&image), &mut textures).unwrap();
+        let pixels = capture(&ui, "recording.ppm");
+        assert!(pixels
+            .chunks_exact(3)
+            .any(|p| p[0] > 150 && p[1] < 90 && p[2] < 90));
+        ui.replays.entries(vec![
+            Entry {
+                path: "first".into(),
+                label: "2026-10-27 02:30   00:08".into(),
+            },
+            Entry {
+                path: "second".into(),
+                label: "2026-10-26 14:00   00:12".into(),
+            },
+        ]);
+        assert!(ui.paused());
+        ui.present_paused(&mut textures).unwrap();
+        capture(&ui, "browser.ppm");
+        let push = |ui: &Desktop, key| {
+            ui.push_test_event(Event::KeyDown {
+                timestamp: 0,
+                window_id: 0,
+                keycode: Some(key),
+                scancode: Scancode::from_keycode(key),
+                keymod: Mod::NOMOD,
+                repeat: false,
+            })
+        };
+        push(&ui, Keycode::Down);
+        push(&ui, Keycode::Return);
+        assert_eq!(
+            ui.poll(&mut settings, true, Context::OnFoot).unwrap(),
+            Some(0x3ff)
+        );
+        assert!(
+            matches!(ui.replays.command.take(),Some(Command::Play(path)) if path == std::path::Path::new("second"))
+        );
+        ui.replays.recording = false;
+        for key in [Keycode::Escape, Keycode::Return] {
+            ui.replay_mode(true);
+            push(&ui, key);
+            assert_eq!(
+                ui.poll(&mut settings, true, Context::OnFoot).unwrap(),
+                Some(0x3ff)
+            );
+            assert!(matches!(ui.replays.command.take(), Some(Command::Stop)));
+            assert!(!ui.game_menu.modal && ui.menu.is_none());
+            ui.replay_mode(false);
+            assert!(!ui.paused());
+        }
+        println!("Replay UI screenshots: {}", root.display());
     }
 }

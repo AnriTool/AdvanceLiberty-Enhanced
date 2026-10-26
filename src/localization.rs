@@ -405,6 +405,7 @@ fn encode(text: &str, font: &Font) -> Result<(Vec<u8>, bool), String> {
     Ok((bytes, extended))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Language {
     pub bytes: Vec<u8>,
     pub label: String,
@@ -416,6 +417,7 @@ pub struct Language {
     pub menu: BTreeMap<String, String>,
     pub(crate) menu_font: Font,
     pub(crate) menu_color_font: ColorFont,
+    #[serde(skip)]
     rom: Vec<u8>,
 }
 impl Language {

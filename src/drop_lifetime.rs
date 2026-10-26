@@ -200,7 +200,7 @@ fn put(b: &mut [u8], a: u32, v: u32) {
         p.copy_from_slice(&v.to_le_bytes());
     }
 }
-#[derive(Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 struct Entry {
     born: u64,
     position: u32,
@@ -209,6 +209,7 @@ struct Entry {
     action: u16,
     protected: bool,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Policy {
     frames: u64,
     cash: [Option<u64>; 4],

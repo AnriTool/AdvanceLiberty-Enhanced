@@ -21,7 +21,7 @@ Sprint по-прежнему блокирует Fire, Jump сохраняет с
 
 Конфиг: `MouseAim = true` перед `[GBA]` в controls.cfg. Отсутствующее поле
 означает false; F5 перечитывает значение. Discard and return отменяет
-изменения, Save and return сохраняет. F8 → Classic отключает режим, не
+изменения, Save and return сохраняет. Выбор Classic отключает режим, не
 стирая сохранённую настройку.
 
 Кнопка удержания настраивается в **On-foot bindings → Aim (hold)**:

@@ -9,7 +9,7 @@ pub const FLAG_I: u32 = 1 << 7;
 pub const FLAG_F: u32 = 1 << 6;
 pub const FLAG_T: u32 = 1 << 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     User = 0x10,
     Fiq = 0x11,
@@ -51,7 +51,7 @@ impl Mode {
 }
 
 /// Exception vectors (all in BIOS at 0x00000000).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exception {
     Undefined = 0x04,
     Swi = 0x08,
@@ -59,7 +59,7 @@ pub enum Exception {
 }
 
 #[repr(C)]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
 pub struct Cpu {
     /// Active register view for the current mode. `regs[15]` holds the
     /// *fetch* address of the next instruction between steps; during

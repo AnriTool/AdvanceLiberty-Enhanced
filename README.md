@@ -34,6 +34,7 @@ See the [Linux guide](docs/en/LINUX.md) for dependencies and source builds.
 - Enhanced Audio with the original SFX/Music volume controls.
 - A 30-second target lifetime for dropped money, weapons and corpses, within game resource limits.
 - External language packs with custom pixel fonts and live language switching.
+- [Gameplay replays](docs/en/REPLAYS.md): F2 records, F3 plays the latest, F4 opens the library.
 
 ## Quick start
 

@@ -52,6 +52,24 @@ class LinuxTools(unittest.TestCase):
         p.write_json(output / 'manifest.json', dict(format=1, rom_sha256=self.manifest['rom_sha256'], libraries=[dict(name='sessions', path=lib.relative_to(self.root).as_posix(), coverage_sha256=p.digest(self.coverage), sha256=p.digest(lib), variants=1)]))
         return lib
 
+    def test_play_records_diagnostic_sessions_only_with_opt_in(self):
+        args = argparse.Namespace(original_audio=False, drop_lifetime=30,
+                                  original_renderer=False, frames=2,
+                                  record_session=False, no_record=False)
+        with patch.object(p, 'prepare', return_value=(self.rom, [])), patch.object(p, 'run') as runtime:
+            p.play(args)
+            command = runtime.call_args.args[0]
+            self.assertNotIn('--record-session', command)
+            self.assertIn('--replays', command)
+            self.assertIn(self.root / 'replays', command)
+            self.assertFalse((self.root / 'data/sessions').exists())
+            args.record_session = True
+            p.play(args)
+            command = runtime.call_args.args[0]
+            session = command[command.index('--record-session') + 1]
+            self.assertEqual(session.parent, self.root / 'data/sessions')
+            self.assertTrue(session.parent.is_dir())
+
     def test_linux_profiles_are_separate_and_detect_stale_coverage(self):
         windows = (self.root / 'native/usa/manifest.json').read_bytes()
         lib = self.install_fixture()

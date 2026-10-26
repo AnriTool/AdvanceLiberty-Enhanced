@@ -136,6 +136,7 @@ version = "0.2.0"
 dependencies = [
  "armv4t",
  "libc",
+ "serde",
  "windows-sys 0.59.0",
 ]
 

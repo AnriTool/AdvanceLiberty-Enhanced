@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-pub const DEFAULT: &str = "# SDL scancode names; physical key positions, independent of keyboard layout.\n# Separate alternatives with commas. P, Escape, F5, F6, F8 and F11 are reserved.\n# Edit this file, then press F5 in the game to reload.\nA = Space, Z\nB = Left Shift, Right Shift, X\nSelect = Tab\nStart = Return\nRight = D, Right\nLeft = A, Left\nUp = W, Up\nDown = S, Down\nR = E\nL = Q\n";
+pub const DEFAULT: &str = "# SDL scancode names; physical key positions, independent of keyboard layout.\n# Separate alternatives with commas. P, Escape, F2, F3, F4, F5, F6 and F11 are reserved.\n# Edit this file, then press F5 in the game to reload.\nA = Space, Z\nB = Left Shift, Right Shift, X\nSelect = Tab\nStart = Return\nRight = D, Right\nLeft = A, Left\nUp = W, Up\nDown = S, Down\nR = E\nL = Q\n";
 const ACTIONS: [&str; 10] = [
     "A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L",
 ];
@@ -157,13 +157,15 @@ fn binding(names: &str, line: usize, optional: bool) -> Result<Vec<Binding>, Str
                     | Scancode::Escape
                     | Scancode::F5
                     | Scancode::F6
-                    | Scancode::F8
+                    | Scancode::F2
+                    | Scancode::F3
+                    | Scancode::F4
                     | Scancode::F11
                     | Scancode::F12
             )
         ) {
             return Err(format!(
-                "Controls line {line}: P, Escape, F5, F6, F8, F11 and F12 are reserved"
+                "Controls line {line}: P, Escape, F2, F3, F4, F5, F6, F11 and F12 are reserved"
             ));
         }
         if keys.contains(&key) {
@@ -811,7 +813,7 @@ mod tests {
     fn enhanced_sections_reject_conflicts_but_old_custom_gba_files_still_load() {
         for invalid in [
             Controls::default_file().replace("Jump = Space", "Jump = J"),
-            Controls::default_file().replace("Fire = J, MouseLeft", "Fire = F8"),
+            Controls::default_file().replace("Fire = J, MouseLeft", "Fire = F2"),
             Controls::default_file().replace("Fire = J, MouseLeft", "Fire = MouseLeft, LMB"),
             Controls::default_file().replace("[Vehicle]", "[Vehicl]"),
             Controls::default_file().replace("BrakeReverse = S, Down", "BrakeReverse = W"),

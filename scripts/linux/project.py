@@ -157,14 +157,15 @@ def prepare(args):
 
 def play(args):
     rom, libraries = prepare(args)
-    for directory in ['data/saves', 'data/config', 'data/sessions']:
+    for directory in ['data/saves', 'data/config']:
         (ROOT / directory).mkdir(parents=True, exist_ok=True)
-    options = ['--save', ROOT / 'data/saves/usa.sav', '--controls', ROOT / 'data/config/controls.cfg', '--camera-preview']
+    options = ['--save', ROOT / 'data/saves/usa.sav', '--controls', ROOT / 'data/config/controls.cfg', '--camera-preview', '--replays', ROOT / 'replays']
     if not args.original_audio:
         options += ['--enhanced-audio']
     if args.drop_lifetime:
         options += ['--drop-lifetime', str(args.drop_lifetime)]
-    if not args.no_record:
+    if args.record_session and not args.no_record:
+        (ROOT / 'data/sessions').mkdir(parents=True, exist_ok=True)
         session = ROOT / 'data/sessions' / ('session-' + uuid.uuid4().hex)
         options += ['--record-session', session]
         print(f'Session: {session}', flush=True)
@@ -353,6 +354,7 @@ def main():
     commands.choices['build'].add_argument('--native', action='store_true', help='also compile Linux native profiles')
     play_parser = commands.choices['play']
     play_parser.add_argument('--no-record', action='store_true')
+    play_parser.add_argument('--record-session', action='store_true')
     play_parser.add_argument('--original-audio', action='store_true')
     play_parser.add_argument('--original-renderer', action='store_true')
     play_parser.add_argument('--frames', type=int, default=0)

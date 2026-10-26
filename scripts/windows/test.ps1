@@ -18,7 +18,7 @@ try {
         $env:SDL_AUDIODRIVER = 'dummy'
         $sdlOptions = @('test', '--release', '--locked', '--package', 'advance-liberty')
         if ($Offline) { $sdlOptions += '--offline' }
-        foreach ($sdlTest in @('f_keys_switch_real_sdl_output_and_reuse_textures', 'options_menu_real_sdl', 'mouse_aim_options_and_viewport_real_sdl', 'language_options_real_sdl', 'native_menu_frontend_real_sdl', 'localized_pause_and_settings_real_sdl', 'enhanced_menu_audio_real_sdl')) {
+        foreach ($sdlTest in @('replay_panel_real_sdl', 'f_keys_switch_real_sdl_output_and_reuse_textures', 'options_menu_real_sdl', 'mouse_aim_options_and_viewport_real_sdl', 'language_options_real_sdl', 'native_menu_frontend_real_sdl', 'localized_pause_and_settings_real_sdl', 'enhanced_menu_audio_real_sdl')) {
             & cargo @sdlOptions $sdlTest -- --ignored
             if ($LASTEXITCODE -ne 0) { throw "SDL test failed: $sdlTest" }
         }

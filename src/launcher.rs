@@ -13,7 +13,7 @@ pub const TITLE: &str = "AdvanceLiberty: Enhanced";
 struct Options {
     rom: Option<PathBuf>,
     original_audio: bool,
-    no_record: bool,
+    record_session: bool,
     frames: u64,
     drop_lifetime: u32,
 }
@@ -42,7 +42,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     while i < args.len() {
         match args[i].as_str() {
             "--original-audio" => options.original_audio = true,
-            "--no-record" => options.no_record = true,
+            "--no-record" => options.record_session = false,
+            "--record-session" => options.record_session = true,
             "--rom" | "--frames" | "--drop-lifetime" => {
                 let key = &args[i];
                 i += 1;
@@ -166,7 +167,7 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if args == ["--help"] {
-        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--drop-lifetime 0..300 (default: 30)\n--no-record\n--frames N (diagnostics)\n\nEnhanced Audio and session recording are enabled by default.", std::env::consts::EXE_SUFFIX);
+        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--drop-lifetime 0..300 (default: 30)\n--record-session\n--frames N (diagnostics)\n\nEnhanced Audio is enabled by default. Diagnostic sessions require --record-session.", std::env::consts::EXE_SUFFIX);
         println!("{help}");
         let _ = sdl2::messagebox::show_simple_message_box(
             sdl2::messagebox::MessageBoxFlag::INFORMATION,
@@ -183,13 +184,7 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         .ok_or("Cannot locate the installation directory")?;
     let rom = find_rom(root, options.rom.as_deref())?;
     let libraries = profile(root)?;
-    for dir in [
-        "data/saves",
-        "data/config",
-        "data/logs",
-        "data/sessions",
-        "languages",
-    ] {
+    for dir in ["data/saves", "data/config", "data/logs", "languages"] {
         fs::create_dir_all(root.join(dir)).map_err(|e| {
             format!("Cannot write to the game folder: {e}\nExtract it to a writable location.")
         })?;
@@ -233,7 +228,9 @@ pub fn launch(args: &[String]) -> Result<(), String> {
             .arg("--drop-lifetime")
             .arg(options.drop_lifetime.to_string());
     }
-    if !options.no_record {
+    child.arg("--replays").arg(root.join("replays"));
+    if options.record_session {
+        fs::create_dir_all(root.join("data/sessions")).map_err(|e| e.to_string())?;
         child
             .arg("--record-session")
             .arg(root.join("data/sessions").join(format!("session-{id}")));
@@ -282,7 +279,8 @@ mod tests {
     fn launch_defaults_overrides_and_worker_detection() {
         let defaults = parse(&[]).unwrap();
         assert_eq!(defaults.drop_lifetime, 30);
-        assert!(!defaults.original_audio && !defaults.no_record);
+        assert!(parse(&args(&["--record-session"])).unwrap().record_session);
+        assert!(!defaults.original_audio && !defaults.record_session);
         let options = parse(&args(&[
             "--rom",
             "my copy.gba",
@@ -295,7 +293,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(options.drop_lifetime, 0);
-        assert!(options.original_audio && options.no_record);
+        assert!(options.original_audio && !options.record_session);
         assert_eq!(options.frames, 120);
         assert!(is_portable(&[]));
         assert!(!is_portable(&args(&["rom", "-", "0", "-", "play", "lib"])));

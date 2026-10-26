@@ -11,3 +11,5 @@
 /native/linux-*/
 __pycache__/
 /languages/en.json
+
+/replays/

@@ -1,5 +1,5 @@
 //! Host viewport. The original 720x480 world stays centered at unchanged scale.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Aspect {
     #[default]
     Original,

@@ -20,7 +20,7 @@ may use original presentation. This does not replace every ROM page. Menus keep
 Esc/Pause opens game pause. Arrows select, Enter confirms and Esc goes back;
 mouse and gamepad navigation are supported. On original pages, Enter/Esc mean
 A/B without also sending Start. P separately pauses the runtime; F6 changes
-the renderer, F8 the control profile and F11 fullscreen.
+the renderer and F11 fullscreen. F2/F3/F4 manage [replays](REPLAYS.md).
 
 Held menu buttons are not passed to gameplay until released. Focus loss blocks
 input. Back can cancel a pending transition.

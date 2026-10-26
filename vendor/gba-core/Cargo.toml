@@ -6,6 +6,7 @@ license.workspace = true
 description = "GBA machine model: ARM7TDMI interpreter, memory map, hardware"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 armv4t = { path = "../armv4t" }
 
 # Host clock for the cartridge RTC, per platform. Unix uses libc's

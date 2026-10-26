@@ -41,15 +41,16 @@ Paths are relative to the EXE, not the current working directory.
 a development checkout: the first launch creates a standard Enhanced profile.
 
 Defaults are Enhanced rendering, Enhanced Audio, a 30-second drop lifetime,
-16:9, fullscreen, aiming while holding RMB, and session recording. Explicitly
-saved choices are not overwritten. `--original-audio`, `--drop-lifetime 0` and
-`--no-record` disable the corresponding features. `--help` displays launch
+16:9, fullscreen and aiming while holding RMB. Diagnostic session recording is
+off by default; launch with `--record-session` to collect native coverage. Explicitly
+saved choices are not overwritten. `--original-audio` and `--drop-lifetime 0`
+disable the corresponding features. `--help` displays launch
 options. Language packs live in `languages/`; the English template is extracted
 from the user's ROM on first launch.
 
 The launcher starts the same EXE in game-runtime mode without a shell. Runtime
-output goes to `data/logs/launch-*.log`, and recordings to
-`data/sessions/session-*`. A child-process failure shows the end of its log
+output goes to `data/logs/launch-*.log`, and opt-in diagnostic recordings to
+`data/sessions/session-*`. User [replays](REPLAYS.md) live separately in `replays/`. A child-process failure shows the end of its log
 and the log path. Closing the game also ends the waiting launcher. The low-level
 CLI remains available for replays and development tools.
 

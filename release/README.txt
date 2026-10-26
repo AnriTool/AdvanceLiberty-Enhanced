@@ -36,7 +36,7 @@ and Caps Lock starts a special mission.
 V cycles Auto/Low/Medium/High camera. Esc/Enter opens the game menu.
 Enhanced Options contains graphics, language and rebinding settings.
 Mouse aim (exp.) in On-foot bindings can disable mouse aiming.
-F6 switches Enhanced/Original rendering; F8 switches Enhanced/Classic controls;
+F6 switches Enhanced/Original rendering; choose Classic controls in Enhanced Options;
 F11 toggles fullscreen. Ctrl+F12 opens the cheat panel.
 
 USER DATA
@@ -50,7 +50,7 @@ Do not include personal ROMs, saves or session recordings in a public archive.
 EXE OPTIONS
 --original-audio       original hardware audio
 --drop-lifetime 0      original item/corpse cleanup rules
---no-record            disable diagnostic session recording
+--record-session       enable diagnostic session recording (off by default)
 --rom "path to ROM"    use a file outside the game folder
 
 Native libraries must remain in native/usa. Do not mix libraries from different
@@ -60,3 +60,7 @@ and notices are in licenses.
 Original project code is MIT-licensed; see LICENSE and NOTICE in this folder.
 Third-party components keep their original terms. The grant does not cover
 the original game or ROM-derived content.
+
+Replays: F2 start/stop recording; F3 play latest; F4 replay browser.
+Esc/Enter stops playback and restores live gameplay. Files: replays/.
+Diagnostic sessions are disabled by default. Enable with --record-session.

@@ -1,6 +1,6 @@
 //! Presentation-only HUD layout in original 240x160 coordinates.
 //! BG1 and screen-fixed radar/weapon OBJs share the same transforms.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Size {
     Half,
     Small,
@@ -41,7 +41,7 @@ impl Size {
         sizes[(i + if reverse { 4 } else { 1 }) % 5]
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub radar: Size,
     pub status: Size,

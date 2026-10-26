@@ -51,7 +51,7 @@ pub const VISIBLE_WIDTH: usize = 240;
 /// (hardware-measured; external timing suites test this).
 pub const HBLANK_FLAG_CYCLE: u64 = 1006;
 
-#[derive(Default, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Copy)]
 struct Timer {
     reload: u16,
     control: u8,
@@ -76,7 +76,7 @@ impl Timer {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Copy)]
 struct Dma {
     src: u32,
     dst: u32,
@@ -106,12 +106,13 @@ impl Dma {
 }
 
 /// Video event phase within the current scanline.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 enum VPhase {
     Hblank,
     LineEnd,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct MemMap {
     pub bios: Vec<u8>,
     pub ewram: Vec<u8>,
@@ -120,6 +121,7 @@ pub struct MemMap {
     pub palette: Vec<u8>,
     pub vram: Vec<u8>,
     pub oam: Vec<u8>,
+    #[serde(skip)]
     pub rom: Vec<u8>,
     /// Physical cartridge size, independent of host-only appended text/font data.
     /// EEPROM decoding must retain the original cartridge's address lines.
@@ -191,6 +193,7 @@ pub struct MemMap {
     /// library. Intercepts 0x080000C4..C9 (the GPIO port) so the guest's
     /// clock reads come from the host's clock. `None` for non-RTC carts,
     /// whose 0xC4 region holds ordinary ROM data.
+    #[serde(skip)]
     pub rtc: Option<crate::rtc::Rtc>,
     /// Direct Sound FIFOs A/B: byte queues fed by writes/DMA at
     /// 0x040000A0/A4, drained one sample per attached-timer overflow.
@@ -212,11 +215,14 @@ pub struct MemMap {
     /// MP2K HLE shadow mixer (Stage 3): present when the stock driver
     /// was detected and the enhanced path is on. The dispatch loops
     /// call `mp2k_frame_hook` when PC lands on `SoundMainRAM`.
+    #[serde(skip)]
     pub mp2k: Option<Box<crate::mp2k::Mp2kHle>>,
     /// GAX v1 HLE shadow mixer (same contract as `mp2k`; at most one
     /// engine shadow is armed per session).
+    #[serde(skip)]
     pub gax: Option<Box<crate::gax::GaxHle>>,
     /// In-house (R) driver HLE shadow mixer (same contract).
+    #[serde(skip)]
     pub rdrv: Option<Box<crate::rdrv::RdrvHle>>,
     /// Shadow-mixer stereo output on the tap grid (interleaved L, R;
     /// hardware-rail units scaled to ±0.5 like the play-side floats).
@@ -238,6 +244,36 @@ pub const AUDIO_SAMPLE_CYCLES: u64 = 256;
 pub const AUDIO_RATE_HZ: u32 = ((1u64 << 24) / AUDIO_SAMPLE_CYCLES) as u32;
 
 impl MemMap {
+    /// Validate persistent snapshots before exposing their buffers to native code.
+    pub fn validate_snapshot(&self, cartridge_len: usize) -> Result<(), &'static str> {
+        if self.bios.len() != 0x4000
+            || self.ewram.len() != 0x40000
+            || self.iwram.len() != 0x8000
+            || self.io.len() != 0x400
+            || self.palette.len() != 0x400
+            || self.vram.len() != 0x18000
+            || self.oam.len() != 0x400
+            || self.sram.len() != 0x10000
+            || self.framebuffer.len() != 240 * 160
+            || self.cartridge_rom_len != cartridge_len
+            || self.real_bios
+            || self.rom.len() < cartridge_len
+            || self.rom.len() > 128 * 1024 * 1024
+            || self.next_event < self.clock
+            || self.vline_start > self.clock
+            || self.audio_cursor > self.clock.saturating_add(AUDIO_SAMPLE_CYCLES)
+            || self.timers.iter().any(|t| t.last_sync > self.clock)
+            || self.eeprom.is_some() != (self.backup == BackupKind::Eeprom)
+            || self.flash.is_some()
+                != matches!(self.backup, BackupKind::Flash64 | BackupKind::Flash128)
+            || self.flash.as_ref().is_some_and(|f| !f.valid_snapshot())
+            || self.eeprom.as_ref().is_some_and(|e| !e.valid_snapshot())
+            || !self.apu.valid_snapshot()
+        {
+            return Err("Invalid replay machine state");
+        }
+        Ok(())
+    }
     /// Deep copy for offline replay. Reject unsupported host-time / HLE mixers.
     pub fn try_fork_for_research(&self) -> Result<Self, &'static str> {
         if self.rtc.is_some() || self.mp2k.is_some() || self.gax.is_some() || self.rdrv.is_some() {

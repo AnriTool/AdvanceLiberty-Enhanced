@@ -558,7 +558,7 @@ impl Menu {
         canvas.set_draw_color(Color::RGB(13, 22, 39));
         canvas.clear();
         canvas.copy(texture, None, None)?;
-        canvas.present();
+        // Desktop presents once after drawing replay indicators/browser overlays.
         Ok(())
     }
     fn draw_contents<T: sdl2::render::RenderTarget>(

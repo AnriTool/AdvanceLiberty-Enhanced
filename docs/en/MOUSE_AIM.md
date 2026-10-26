@@ -20,7 +20,7 @@ buttons use the original layout without mouse aiming.
 
 Configuration: `MouseAim = true` before `[GBA]` in controls.cfg. An absent
 field means false; F5 reloads it. Discard and return cancels edits; Save and
-return saves them. F8 → Classic disables the mode without erasing its setting.
+return saves them. Selecting Classic controls disables the mode without erasing its setting.
 
 Remap the hold button in **On-foot bindings → Aim (hold)**: Enter replaces,
 Insert adds an alternative, Delete disables. The list scrolls when selecting

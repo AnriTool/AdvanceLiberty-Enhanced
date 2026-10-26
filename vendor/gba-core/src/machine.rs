@@ -24,10 +24,12 @@ pub const IRQ_RETURN_ADDR: u32 = 0x0000_0138;
 const HANDLER_PTR: u32 = 0x0300_7FFC;
 
 #[repr(C)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: MemMap,
     /// Decode memoization (content-keyed; see `exec::DecodeCache`).
+    #[serde(skip)]
     pub decode_cache: exec::DecodeCache,
 }
 

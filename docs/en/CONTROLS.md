@@ -3,8 +3,7 @@
 **English** | [Русский](../ru/CONTROLS.md)
 
 Enhanced keyboard/mouse controls are enabled in `data/config/controls.cfg`.
-F8 temporarily switches Enhanced/Classic independently of the F6 renderer
-switch. For a persistent choice, use **Esc → Enhanced Options → Control mode
+Choose Enhanced/Classic in **Esc → Enhanced Options → Control mode
 → Save and return**, or change `Mode = Enhanced` to `Mode = Classic`.
 F5 reloads the file; an invalid file leaves the previous working settings intact.
 
@@ -84,14 +83,14 @@ rejected. TurretModifier uses the current SteerLeft/SteerRight bindings, so
 remapping steering also remaps turret direction. Caps Lock acts as a physical
 press, not a persistent toggle state.
 
-P, Escape, F5, F6, F8, F11 and F12 are reserved for host functions. By default,
+P, Escape, F2, F3, F4, F5, F6, F11 and F12 are reserved for host functions. By default,
 the left mouse button sends Fire. **Mouse aim (exp.)** is enabled for new
 profiles; its toggle is at the end of On-foot bindings. Holding Aim, right
 mouse button by default, separates facing/firing from WASD. Without the hold,
 the cursor does not turn the player. Aim is remappable and sends no GBA buttons.
 The setting is stored as `MouseAim = true` beside Mode before `[GBA]`.
 An absent field in an older profile means false. F5 reloads it with bindings;
-F8 → Classic temporarily disables aiming. [Implementation](MOUSE_AIM.md).
+Selecting Classic controls disables aiming. [Implementation](MOUSE_AIM.md).
 SDL GameController retains the original GBA layout; Enhanced profiles currently
 apply to keyboard and mouse.
 
@@ -133,3 +132,7 @@ changing jump into parking brake, or F from changing enter into exit. Release
 and press again to activate the new action. Matching movement directions
 continue across on-foot/vehicle changes. Opening a menu does not carry a held
 action into navigation. These new restrictions do not apply in Classic.
+
+F2 starts/stops replay recording, F3 plays the latest replay, and F4 opens
+the replay browser. Esc/Enter stops playback and restores live gameplay.
+See [Replays](REPLAYS.md). F8 has no host shortcut.

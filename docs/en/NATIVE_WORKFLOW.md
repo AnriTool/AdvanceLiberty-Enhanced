@@ -48,6 +48,10 @@ recording fails collection instead of being automatically excluded. Very old
 recordings may stop matching after font or application changes; investigate
 the difference rather than assuming the added native code is at fault.
 
+Diagnostic sessions are opt-in: launch `AdvanceLiberty --record-session`,
+`.\Play.bat -RecordSession` or `bash play.sh --record-session` before collecting coverage.
+Gameplay replays in `replays/` do not replace diagnostic sessions.
+
 ## Separate commands
 
 ```powershell

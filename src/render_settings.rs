@@ -1,17 +1,17 @@
 //! Presentation preferences, independent of SDL and guest state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Renderer {
     #[default]
     Enhanced,
     Original,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextureMapping {
     #[default]
     Perspective,
     Affine,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub renderer: Renderer,
     pub textures: TextureMapping,
