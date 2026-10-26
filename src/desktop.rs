@@ -943,11 +943,21 @@ impl Desktop {
             textures.allocations
         );
     }
+    #[cfg(test)]
     pub fn present(
         &mut self,
         source: &gba_core::MemMap,
         preview: Option<&[u16]>,
         textures: &mut Textures<'_>,
+    ) -> Result<(), String> {
+        self.present_with_audio(source, preview, textures, None)
+    }
+    pub fn present_with_audio(
+        &mut self,
+        source: &gba_core::MemMap,
+        preview: Option<&[u16]>,
+        textures: &mut Textures<'_>,
+        audio_samples: Option<&[i16]>,
     ) -> Result<(), String> {
         let start = Instant::now();
         let custom_menu = self.game_menu.view.is_some() && self.menu_skin.is_some();
@@ -1019,7 +1029,7 @@ impl Desktop {
                 if self.menu_skin.is_some() && self.game_menu.mute_navigation_audio() {
                     audio.clear();
                 } else {
-                    audio.queue_audio(&source.audio_buf)?;
+                    audio.queue_audio(audio_samples.unwrap_or(&source.audio_buf))?;
                 }
             }
             self.next_frame += FRAME_TIME;

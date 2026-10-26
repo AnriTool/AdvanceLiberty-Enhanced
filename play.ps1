@@ -8,8 +8,10 @@ param(
     [string]$SessionDirectory,
     [switch]$OriginalRenderer,
     [switch]$OriginalMenus,
+    [switch]$EnhancedAudio = $true,
+    [switch]$OriginalAudio,
     [switch]$PreserveCash,
-    [ValidateRange(0,300)][uint32]$DropLifetime = 0,
+    [ValidateRange(0,300)][uint32]$DropLifetime = 30,
     [switch]$AffineTextures,
     [uint64]$Frames = 0
 )
@@ -26,6 +28,7 @@ foreach ($path in @($SavePath, $ControlsPath)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
 }
 $runtimeOptions = @('--camera-preview')
+if ($EnhancedAudio -and !$OriginalAudio) { $runtimeOptions += '--enhanced-audio' }
 if ($PreserveCash) { $runtimeOptions += '--preserve-cash' }
 if ($DropLifetime -gt 0) { $runtimeOptions += @('--drop-lifetime', "$DropLifetime") }
 if ($OriginalMenus) { $runtimeOptions += '--original-menus' }

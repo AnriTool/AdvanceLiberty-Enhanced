@@ -28,6 +28,7 @@ mod coverage;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod drop_lifetime;
+mod enhanced_audio;
 mod frame_capture;
 #[cfg(feature = "desktop")]
 mod game_menu;
@@ -202,6 +203,12 @@ fn coverage(native_dispatches: u64, misses: u64, rejected: u64) -> coverage::Cov
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let enhanced_sound = if let Some(index) = args.iter().position(|s| s == "--enhanced-audio") {
+        args.remove(index);
+        true
+    } else {
+        false
+    };
     let _original_menus = if let Some(index) = args.iter().position(|s| s == "--original-menus") {
         args.remove(index);
         true
@@ -772,6 +779,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.to_str())
         .map(str::to_owned);
     let mut m = Machine::new(rom.clone());
+    m.bus.tap_channels = enhanced_sound;
+    let mut enhanced_audio = enhanced_sound.then(enhanced_audio::Output::new);
+    if enhanced_sound {
+        eprintln!(
+            "Audio: Enhanced Output (per-channel sinc / DC blocker / soft clip), engine: {}",
+            gba_core::engine::classify(&rom).describe()
+        );
+    }
     if let Some(language) = language.as_mut() {
         language.install(&mut m);
         println!(
@@ -808,6 +823,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     if let (Some(recording), Some(language)) = (recording.as_ref(), language.as_ref()) {
         recording.language_pack(&language.bytes)?;
+    }
+    if enhanced_sound {
+        if let Some(recording) = recording.as_ref() {
+            use std::io::Write;
+            let mut info = fs::OpenOptions::new()
+                .append(true)
+                .open(recording.directory().join("info.txt"))?;
+            writeln!(info, "audio_output=EnhancedOutput")?;
+        }
     }
     if preserve_cash {
         if let Some(recording) = recording.as_ref() {
@@ -1192,6 +1216,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let preview_image = camera_preview
             .as_mut()
             .and_then(|p| p.frame_configured(&m.bus, render_settings));
+        let enhanced_samples = enhanced_audio.as_mut().map(|audio| audio.frame(&mut m.bus));
         #[cfg(feature = "desktop")]
         if let (Some(capture), Some(image)) = (&capture, &preview_image) {
             capture.presentation(
@@ -1213,7 +1238,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(capture) = &capture {
                 capture.menu(m.bus.frames, ui)?;
             }
-            ui.present(&m.bus, preview_image.as_deref(), textures.as_mut().unwrap())?;
+            ui.present_with_audio(
+                &m.bus,
+                preview_image.as_deref(),
+                textures.as_mut().unwrap(),
+                enhanced_samples,
+            )?;
             ui.set_aim_projection(if preview_image.is_some() {
                 camera_preview.as_ref().and_then(|p| p.aim_projection())
             } else {
@@ -1238,7 +1268,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(audio) = audio_output.as_mut() {
             use std::io::Write;
-            for sample in &m.bus.audio_buf {
+            for sample in enhanced_samples.unwrap_or(&m.bus.audio_buf) {
                 audio.write_all(&sample.to_le_bytes())?;
             }
         }
