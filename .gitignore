@@ -2,6 +2,8 @@
 /artifacts/
 /dist/
 /data/
+/test-data/*
+!/test-data/README.md
 /roms/*.gba
 /native/usa/*.dll
 /native/usa/*.c

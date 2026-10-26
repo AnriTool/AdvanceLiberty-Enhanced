@@ -5,6 +5,11 @@ use gba_core::{
     Mode,
 };
 use std::{cell::Cell, collections::HashMap, ffi::c_void};
+fn menu_session() -> std::path::PathBuf {
+    std::env::var_os("ADVANCE_LIBERTY_MENU_SESSION")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "test-data/menu-session".into())
+}
 thread_local! {static REJECTED:Cell<bool>=const{Cell::new(false)};}
 extern "C" fn defer(m: *mut c_void) -> u32 {
     REJECTED.with(|v| v.set(true));
@@ -129,10 +134,10 @@ impl Engine {
 fn real_native_camera_roundtrip_resume_and_quit() {
     let mut engine = Engine::load();
     let mut m = Machine::new(std::fs::read("roms/usa.gba").unwrap());
-    let source = "artifacts/menu-play-25df02055b414a128fce7029ca9a58cb/session";
+    let source = menu_session();
     m.bus
-        .load_save_data(&std::fs::read(format!("{source}/initial.sav")).unwrap());
-    let input = std::fs::read_to_string(format!("{source}/input.gba-input")).unwrap();
+        .load_save_data(&std::fs::read(source.join("initial.sav")).unwrap());
+    let input = std::fs::read_to_string(source.join("input.gba-input")).unwrap();
     let keys: Vec<(u64, u16)> = input
         .lines()
         .filter_map(|line| {
@@ -229,9 +234,9 @@ fn real_native_camera_roundtrip_resume_and_quit() {
 fn real_native_save_and_exit_writes_and_reloads_progress() {
     let mut engine = Engine::load();
     let rom = std::fs::read("roms/usa.gba").unwrap();
-    let source = "artifacts/menu-play-25df02055b414a128fce7029ca9a58cb/session";
-    let initial = std::fs::read(format!("{source}/initial.sav")).unwrap();
-    let input = std::fs::read_to_string(format!("{source}/input.gba-input")).unwrap();
+    let source = menu_session();
+    let initial = std::fs::read(source.join("initial.sav")).unwrap();
+    let input = std::fs::read_to_string(source.join("input.gba-input")).unwrap();
     let keys: Vec<(u64, u16)> = input
         .lines()
         .filter_map(|line| {
