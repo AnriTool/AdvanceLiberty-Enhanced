@@ -1,6 +1,6 @@
 param([string]$OutputDirectory, [switch]$SkipBuild, [switch]$Offline)
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'tools/Project.ps1')
+. (Join-Path $PSScriptRoot 'Project.ps1')
 if (!$SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -Offline:$Offline }
 $exe = Get-GameExecutable -SkipBuild
 $cargo = Get-Content (Join-Path $ProjectRoot 'Cargo.toml') -Raw

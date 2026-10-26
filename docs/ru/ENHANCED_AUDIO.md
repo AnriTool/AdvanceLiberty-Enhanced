@@ -2,9 +2,9 @@
 
 [English](../en/ENHANCED_AUDIO.md) | **Русский**
 
-Обычный `Play.cmd` включает Enhanced Output по умолчанию.
-Для сравнения с прежним аппаратным звуком: `Play.cmd -OriginalAudio`.
-Явный флаг `Play.cmd -EnhancedAudio` также поддерживается.
+Обычный `Play.bat` включает Enhanced Output по умолчанию.
+Для сравнения с прежним аппаратным звуком: `Play.bat -OriginalAudio`.
+Явный флаг `Play.bat -EnhancedAudio` также поддерживается.
 Это параметр запуска, он пока не записывается в настройки ПК.
 
 Использованы DSP-алгоритмы из JRickey/gba-recomp, базовая ревизия

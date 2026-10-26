@@ -90,7 +90,7 @@ Angles 0..1023 cover one full turn: 0 up, 256 right, 512 down, 768 left.
 `none` restores original behavior. The file does not exist before aiming is
 first enabled. Older recordings work without it.
 
-The runtime automatically reads aim.gba-aim beside input.gba-input, so replay.ps1
+The runtime automatically reads aim.gba-aim beside input.gba-input, so scripts/windows/replay.ps1
 supports these recordings without new mandatory options. `--aim-input FILE.gba-aim`
 is available for separate experiments. Invalid headers, angles, frame ordering,
 or a missing initial frame-0 row are rejected. The stream does not enable the

@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$root = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent
 $fixture = Join-Path $root ('artifacts/native-coverage-test-' + [guid]::NewGuid().ToString('N'))
 foreach ($directory in @('native/usa/coverage','roms','data/sessions/good','data/sessions/bad','data/sessions/unfinished')) {
     [void](New-Item -ItemType Directory -Path (Join-Path $fixture $directory))
@@ -22,7 +22,7 @@ Put 'data/sessions/bad/fallbacks.csv' ($header + (Row '03000003' '1234') + "`n" 
 Put 'data/sessions/unfinished/fallbacks.partial.csv' ($header + (Row '03000003' '5678') + "`n")
 $target = Join-Path $fixture 'native/usa/coverage/sessions.csv'
 $before = (Get-FileHash $target).Hash
-$collector = Join-Path $root 'tools/collect-native.ps1'
+$collector = Join-Path $root 'scripts/windows/collect-native.ps1'
 $preview = & $collector -ProjectDirectory $fixture -DryRun
 Assert ($preview.Added -eq 3) 'Deduplication lost distinct RAM variants or included duplicate/known rows.'
 Assert ($preview.ExcludedSessions.Count -eq 2) 'Invalid and unfinished sessions must be excluded.'

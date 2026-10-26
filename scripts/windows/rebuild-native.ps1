@@ -22,7 +22,7 @@ if (!$Gcc) {
 $Gcc = (Resolve-Path -LiteralPath $Gcc).Path
 $gccTarget = & $Gcc -dumpmachine
 if ($LASTEXITCODE -ne 0 -or $gccTarget -notmatch '^x86_64-w64-mingw32$') { throw 'Use MinGW x64 GCC (x86_64-w64-mingw32), not MSYS GCC.' }
-if (!$SkipBuild) { & (Join-Path $ProjectRoot 'build.ps1') -Tools | Out-Host }
+if (!$SkipBuild) { & (Join-Path $ProjectRoot 'scripts/windows/build.ps1') -Tools | Out-Host }
 $compiler = Join-Path $ProjectRoot 'target/release/advance-aot-supplement.exe'
 if (!(Test-Path -LiteralPath $compiler)) { throw 'Build the AOT tool first.' }
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $ProjectRoot ('artifacts/native-build-' + [Guid]::NewGuid().ToString('N')) }

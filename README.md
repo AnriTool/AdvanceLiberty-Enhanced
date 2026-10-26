@@ -12,7 +12,8 @@ holders; it does not grant rights to the original game.
 
 AdvanceLiberty: Enhanced is a native PC runtime that adds modern presentation
 and controls while preserving the original game logic.
-The current portable release targets **Windows x64**.
+Build targets: **Windows x64** and **Linux x86_64**.
+See the [Linux guide](docs/en/LINUX.md) for dependencies and source builds.
 
 ## Features
 
@@ -38,7 +39,8 @@ The current portable release targets **Windows x64**.
 
 1. Extract the complete release folder.
 2. Put your **unmodified USA `.gba` dump** in `roms/`, under any filename.
-3. Run **AdvanceLiberty.exe**. No scripts, compiler or Rust installation is needed.
+3. Run **AdvanceLiberty.exe** (Windows) or **./AdvanceLiberty** (Linux).
+   Packaged releases need no build tools.
 
 New profiles default to Enhanced rendering/audio/controls, 16:9 and fullscreen.
 Open **Esc → Enhanced Options** to configure the game. Existing saved choices

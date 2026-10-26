@@ -1,7 +1,7 @@
 param(
     [string[]]$Session,
     [string]$Rom,
-    [string]$ProjectDirectory = (Split-Path $PSScriptRoot -Parent),
+    [string]$ProjectDirectory = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
     [string]$OutputDirectory,
     [switch]$DryRun
 )

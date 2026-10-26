@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = Split-Path $PSScriptRoot -Parent
+$ProjectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 
 function Get-GameRom([string]$Rom) {
     if (!$Rom) { $Rom = Join-Path $ProjectRoot 'roms/usa.gba' }
@@ -21,7 +21,7 @@ function Get-NativeLibraries {
 function Get-GameExecutable([switch]$SkipBuild) {
     $exe = Join-Path $ProjectRoot 'target/release/AdvanceLiberty.exe'
     if (!$SkipBuild -or !(Test-Path -LiteralPath $exe)) {
-        & (Join-Path $ProjectRoot 'build.ps1') | Out-Host
+        & (Join-Path $ProjectRoot 'scripts/windows/build.ps1') | Out-Host
     }
     $exe
 }

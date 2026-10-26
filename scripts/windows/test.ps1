@@ -1,14 +1,15 @@
 param([switch]$Offline, [switch]$Sdl)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Project.ps1')
 $cargoOptions = @('test', '--release', '--locked', '--package', 'advance-liberty', '--package', 'advance-aot-supplement')
 if ($Offline) { $cargoOptions += '--offline' }
-Push-Location $PSScriptRoot
+Push-Location $ProjectRoot
 $oldVideo = $env:SDL_VIDEODRIVER
 $oldRenderer = $env:SDL_RENDER_DRIVER
 $oldAudio = $env:SDL_AUDIODRIVER
 try {
-    & (Join-Path $PSScriptRoot 'tools/tests/native-coverage.ps1')
-    & (Join-Path $PSScriptRoot 'tools/tests/native-install.ps1')
+    & (Join-Path $PSScriptRoot 'tests/native-coverage.ps1')
+    & (Join-Path $PSScriptRoot 'tests/native-install.ps1')
     & cargo @cargoOptions
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     if ($Sdl) {

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-. (Join-Path $root 'tools/Native.ps1')
+$root = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent
+. (Join-Path $root 'scripts/windows/Native.ps1')
 $fixture = Join-Path $root ('artifacts/native-install-test-' + [guid]::NewGuid().ToString('N'))
 foreach ($name in @('native/usa','build-one','build-two')) { [void](New-Item -ItemType Directory -Path (Join-Path $fixture $name)) }
 function Put([string]$path,[string]$text) { [IO.File]::WriteAllText((Join-Path $fixture $path),$text) }

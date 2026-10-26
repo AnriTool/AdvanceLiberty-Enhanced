@@ -1,8 +1,9 @@
 param([switch]$Offline, [switch]$Tools)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Project.ps1')
 $cargoOptions = @('build', '--release', '--locked', '--package', 'advance-liberty', '--bin', 'AdvanceLiberty')
 if ($Offline) { $cargoOptions += '--offline' }
-Push-Location $PSScriptRoot
+Push-Location $ProjectRoot
 try {
     & cargo @cargoOptions
     if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)." }

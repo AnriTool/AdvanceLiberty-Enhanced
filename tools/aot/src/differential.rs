@@ -6,7 +6,7 @@ use gba_core::{
 use std::{ffi::c_void, fmt::Write};
 
 #[test]
-#[ignore = "requires MinGW GCC; set ADVANCE_AOT_TEST_GCC"]
+#[ignore = "requires a host C compiler; set ADVANCE_AOT_TEST_GCC"]
 fn compiled_pc_and_shift_operations_match_oracle() {
     let gcc = std::env::var("ADVANCE_AOT_TEST_GCC").expect("set ADVANCE_AOT_TEST_GCC");
     let root = std::env::temp_dir().join(format!("advance-aot-diff-{}", std::process::id()));
@@ -33,7 +33,7 @@ fn compiled_pc_and_shift_operations_match_oracle() {
     let (source, count, skipped) = crate::variants::generate(&audit, &[]).unwrap();
     assert_eq!((count, skipped), (instructions.len(), 0));
     let c_path = root.join("synthetic.c");
-    let dll_path = root.join("synthetic.dll");
+    let dll_path = root.join(format!("synthetic.{}", std::env::consts::DLL_EXTENSION));
     std::fs::write(&c_path, source).unwrap();
     super::compile(&c_path, &dll_path, &gcc).unwrap();
     let library = unsafe { libloading::Library::new(&dll_path) }.unwrap();

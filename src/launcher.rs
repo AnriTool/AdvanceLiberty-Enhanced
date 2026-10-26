@@ -106,7 +106,8 @@ fn profile(root: &Path) -> Result<Vec<PathBuf>, String> {
                 .components()
                 .all(|c| matches!(c, Component::Normal(_)))
                 || !relative.starts_with("native/usa")
-                || relative.extension() != Some(std::ffi::OsStr::new("dll"))
+                || relative.extension()
+                    != Some(std::ffi::OsStr::new(std::env::consts::DLL_EXTENSION))
             {
                 return Err("Invalid native library path".into());
             }
@@ -157,7 +158,7 @@ fn find_rom(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, String> {
     if !unsupported.is_empty() {
         return Err(format!("No supported ROM found.\nThese files are incompatible: {}\nUse your unmodified USA dump.\nExpected SHA-256: {}", unsupported.join(", "), crate::rom_profile::USA));
     }
-    Err(format!("Your cartridge ROM is required.\n\nPlace your legally obtained, unmodified USA .gba dump in:\n{}\n\nKeep any filename, then start AdvanceLiberty.exe again.\nYou can also drag a .gba file onto the EXE.\n\nNo ROM is included or downloaded by this application.", root.join("roms").display()))
+    Err(format!("Your cartridge ROM is required.\n\nPlace your legally obtained, unmodified USA .gba dump in:\n{}\n\nKeep any filename, then start AdvanceLiberty{} again.\nYou can also pass the ROM path with --rom FILE.\n\nNo ROM is included or downloaded by this application.", root.join("roms").display(), std::env::consts::EXE_SUFFIX))
 }
 pub fn launch(args: &[String]) -> Result<(), String> {
     if args == ["--version"] {
@@ -165,7 +166,7 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if args == ["--help"] {
-        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty.exe.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--drop-lifetime 0..300 (default: 30)\n--no-record\n--frames N (diagnostics)\n\nEnhanced Audio and session recording are enabled by default.");
+        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--drop-lifetime 0..300 (default: 30)\n--no-record\n--frames N (diagnostics)\n\nEnhanced Audio and session recording are enabled by default.", std::env::consts::EXE_SUFFIX);
         println!("{help}");
         let _ = sdl2::messagebox::show_simple_message_box(
             sdl2::messagebox::MessageBoxFlag::INFORMATION,
@@ -323,9 +324,10 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("advance-liberty-profile-{}", std::process::id()));
         fs::create_dir_all(root.join("native/usa")).unwrap();
-        let dll = root.join("native/usa/test.dll");
+        let relative = format!("native/usa/test.{}", std::env::consts::DLL_EXTENSION);
+        let dll = root.join(&relative);
         fs::write(&dll, b"fixture").unwrap();
-        let mut manifest = serde_json::json!({"format":1,"rom_sha256":crate::rom_profile::USA,"libraries":[{"path":"native/usa/test.dll","sha256":crate::rom_profile::digest(b"fixture")}]});
+        let mut manifest = serde_json::json!({"format":1,"rom_sha256":crate::rom_profile::USA,"libraries":[{"path":relative,"sha256":crate::rom_profile::digest(b"fixture")}]});
         let write = |value: &serde_json::Value| {
             fs::write(
                 root.join("native/usa/manifest.json"),

@@ -35,7 +35,7 @@ sessions. Для каждого хранится накопленный CSV в `
 ## Каталоги
 
 `src/`, `resources/` и `vendor/` нужны сборке. `tools/aot/` содержит генератор
-нативных инструкций и дизассемблеры. `tools/diagnostics/` и
+нативных инструкций и дизассемблеры. `scripts/windows/diagnostics/`, `tools/diagnostics/` и
 `tools/localization/` — повторно используемые инструменты анализа и переводов.
 Исходные лицензии и авторство сторонних компонентов сохраняются в `vendor/`.
 
@@ -46,7 +46,7 @@ sessions. Для каждого хранится накопленный CSV в `
 Приватные минимальные фикстуры регрессий отделены в `test-data/`.
 
 `release/` содержит исходные инструкции и уведомления для поставки;
-`dist/` — готовую пользовательскую папку и ZIP. `package.ps1` использует
+`dist/` — готовую пользовательскую папку и ZIP. `scripts/windows/package.ps1` использует
 явный список файлов и не копирует ROM, пользовательские данные, фикстуры,
 историю исследований или инструменты разработчика.
 Документация использует одинаковые деревья `docs/en/` и `docs/ru/`.
@@ -60,15 +60,17 @@ SDL собирается автоматически и связывается с
 отдельно от MSVC для Rust. Внешняя копия gba-recomp и применение patch не нужны.
 
 ```powershell
-./build.ps1 -Offline -Tools
-./test.ps1 -Offline -Sdl
-./Play.cmd -SkipBuild
-./package.ps1 -Offline
+./scripts/windows/build.ps1 -Offline -Tools
+./scripts/windows/test.ps1 -Offline -Sdl
+./Play.bat -SkipBuild
+./scripts/windows/package.ps1 -Offline
 ```
 
-`Play.cmd` использует рабочие сохранения и настройки. Пользовательская
+`Play.bat` использует рабочие сохранения и настройки. Пользовательская
 сборка запускается через EXE, без BAT/PowerShell или компилятора.
 CollectNative, UpdateNative и RebuildNative сохраняют независимые роли.
 
 [Переносимая сборка](PORTABLE.md) · [Нативное покрытие](NATIVE_WORKFLOW.md) ·
 [Локальные фикстуры](../../test-data/README.ru.md)
+
+[Сборка Linux и структура скриптов](LINUX.md): нативные `.so`, запуск из исходников и упаковка `.tar.gz`.

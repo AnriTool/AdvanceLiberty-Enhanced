@@ -15,7 +15,7 @@ param(
     [switch]$AffineTextures,
     [uint64]$Frames = 0
 )
-. (Join-Path $PSScriptRoot 'tools/Project.ps1')
+. (Join-Path $PSScriptRoot 'Project.ps1')
 if ($NoRecord -and $SessionDirectory) { throw 'Choose -NoRecord or -SessionDirectory.' }
 $Rom = Get-GameRom $Rom
 $libraries = Get-NativeLibraries

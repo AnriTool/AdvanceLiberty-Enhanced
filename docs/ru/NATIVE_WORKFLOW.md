@@ -5,7 +5,7 @@
 После завершения игры запустите из каталога проекта:
 
 ```powershell
-.\UpdateNative.cmd
+.\UpdateNative.bat
 ```
 
 Команда собирает новые инструкции из завершённых записей `data/sessions/`,
@@ -26,7 +26,7 @@ USA ROM, формат и выравнивание инструкций, совп
 Для проверки поведения новых вариантов:
 
 ```powershell
-.\UpdateNative.cmd -Verify
+.\UpdateNative.bat -Verify
 ```
 
 До установки DLL повторяются только записи, которые дали новые варианты.
@@ -39,7 +39,7 @@ USA ROM, формат и выравнивание инструкций, совп
 Можно выбрать одну запись:
 
 ```powershell
-.\UpdateNative.cmd -Session session-0123456789abcdef0123456789abcdef -Verify
+.\UpdateNative.bat -Session session-0123456789abcdef0123456789abcdef -Verify
 ```
 
 Для нескольких записей используйте PowerShell-скрипт напрямую с массивом
@@ -52,14 +52,14 @@ USA ROM, формат и выравнивание инструкций, совп
 ## Раздельные команды
 
 ```powershell
-.\CollectNative.cmd              # Только накопить CSV, без компиляции
-.\CollectNative.cmd -DryRun      # Посмотреть результат без изменения CSV
-.\RebuildNative.cmd              # Пересобрать и установить sessions из CSV
+.\CollectNative.bat              # Только накопить CSV, без компиляции
+.\CollectNative.bat -DryRun      # Посмотреть результат без изменения CSV
+.\RebuildNative.bat              # Пересобрать и установить sessions из CSV
 ```
 
-`CollectNative.cmd` не меняет действующую DLL и её манифест: до пересборки
+`CollectNative.bat` не меняет действующую DLL и её манифест: до пересборки
 CSV может содержать больше вариантов, чем установленная библиотека.
-`UpdateNative.cmd` распознаёт такое незавершённое обновление по числу строк.
+`UpdateNative.bat` распознаёт такое незавершённое обновление по числу строк.
 `-Force` принудительно пересобирает профиль; `-SkipBuild` использует готовые
 Rust-инструменты. `-Gcc PATH` позволяет задать MinGW GCC.
 Если покрытие было собрано отдельно, `-Verify` проверит одну совместимую
@@ -85,11 +85,11 @@ CSV остаётся на месте для исправления или пов
 
 Тесты сборщика и установки, включая отбрасывание несовместимого аудита,
 сохранение разных RAM-вариантов и откат при частичной неудаче установки,
-входят в `test.ps1`. Отдельный запуск:
+входят в `scripts/windows/test.ps1`. Отдельный запуск:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/native-coverage.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/native-install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/tests/native-coverage.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/tests/native-install.ps1
 ```
 
 ## Назначение проверок

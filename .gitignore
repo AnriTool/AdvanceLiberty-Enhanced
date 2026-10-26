@@ -8,5 +8,6 @@
 /roms/*.gba
 /native/usa/*.dll
 /native/usa/*.c
+/native/linux-*/
 __pycache__/
 /languages/en.json

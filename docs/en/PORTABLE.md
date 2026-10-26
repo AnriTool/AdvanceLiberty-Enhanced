@@ -55,7 +55,7 @@ CLI remains available for replays and development tools.
 
 ## Packaging a release
 
-`./package.ps1 -Offline` builds the release EXE and creates a new folder and ZIP
+`./scripts/windows/package.ps1 -Offline` builds the release EXE and creates a new folder and ZIP
 at `dist/AdvanceLiberty-Enhanced-VERSION-win64`. `-SkipBuild` uses an existing
 EXE; `-OutputDirectory PATH` selects a new location. Existing output folders
 are never cleared or overwritten, protecting any ROMs/saves added later.
@@ -65,8 +65,10 @@ instructions and license notices. Native profiles must already have been built
 with CollectNative/UpdateNative/RebuildNative; those tools remain in the project.
 Generated C, coverage, research history and user data are excluded. Do not
 redistribute a manually zipped folder after testing it with personal data;
-run `package.ps1` again with a new output directory.
+run `scripts/windows/package.ps1` again with a new output directory.
 
 `release.json` records the version and file hashes; a `.sha256` file accompanies
 the ZIP. Third-party notices retain gba-recomp authorship and dependency
 licenses. Third-party project names are not changed by the application's rebranding.
+
+[Linux builds and tar.gz packaging](LINUX.md) use separate platform binaries and shell entry points.

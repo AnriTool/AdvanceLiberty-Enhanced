@@ -5,7 +5,7 @@ param(
     [switch]$SkipBuild,
     [switch]$AllowInterpreter
 )
-. (Join-Path $PSScriptRoot 'tools/Project.ps1')
+. (Join-Path $PSScriptRoot 'Project.ps1')
 if (!(Test-Path -LiteralPath $Session -PathType Container)) { $Session = Join-Path $ProjectRoot "data/sessions/$Session" }
 $Session = (Resolve-Path -LiteralPath $Session).Path
 $summary = @{}

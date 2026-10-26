@@ -20,13 +20,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     if args.len() != 4 {
         return Err(
-            "Usage: advance-aot-supplement AUDIT.csv ROM OUTPUT.dll GCC [--ram-variants]".into(),
+            "Usage: advance-aot-supplement AUDIT.csv ROM OUTPUT_LIBRARY CC [--ram-variants]".into(),
         );
     }
     let output = PathBuf::from(&args[2]);
     let source = output.with_extension("c");
     if output.exists() || source.exists() {
-        return Err("Output DLL/C already exists; choose a new name".into());
+        return Err("Output library/C already exists; choose a new name".into());
     }
     let rom = fs::read(&args[1])?;
     if rom.len() != 0x1000000 || &rom[0xac..0xb0] != b"BGTE" {
@@ -133,9 +133,13 @@ fn compile(
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
-    let status = Command::new(&compiler)
-        .env("PATH", std::env::join_paths(paths)?)
-        .args(["-shared", "-O2", "-std=c11"])
+    let mut command = Command::new(&compiler);
+    command.env("PATH", std::env::join_paths(paths)?);
+    command.args(["-shared", "-O2", "-std=c11"]);
+    // ELF shared objects require position-independent references to the registry.
+    #[cfg(unix)]
+    command.arg("-fPIC");
+    let status = command
         .arg(source)
         .arg("-o")
         .arg(output)

@@ -11,6 +11,7 @@ consistent. Original third-party license texts remain unchanged.
 
 ## Running and development
 
+- [Linux builds and scripts](LINUX.md)
 - [User folder and packaging](PORTABLE.md)
 - [Architecture and directories](PROJECT.md)
 - [Collecting and updating native coverage](NATIVE_WORKFLOW.md)

@@ -5,7 +5,7 @@
 After closing the game, run this from the project directory:
 
 ```powershell
-.\UpdateNative.cmd
+.\UpdateNative.bat
 ```
 
 It collects new instructions from completed `data/sessions/` recordings,
@@ -26,7 +26,7 @@ alone does not establish equivalent execution.
 To validate the behavior of new variants:
 
 ```powershell
-.\UpdateNative.cmd -Verify
+.\UpdateNative.bat -Verify
 ```
 
 Only recordings that contributed new variants are replayed before installation.
@@ -39,7 +39,7 @@ every CSV update.
 To select one recording:
 
 ```powershell
-.\UpdateNative.cmd -Session session-0123456789abcdef0123456789abcdef -Verify
+.\UpdateNative.bat -Session session-0123456789abcdef0123456789abcdef -Verify
 ```
 
 For several recordings, call the PowerShell script directly with
@@ -51,13 +51,13 @@ the difference rather than assuming the added native code is at fault.
 ## Separate commands
 
 ```powershell
-.\CollectNative.cmd              # Collect CSV only, without compiling
-.\CollectNative.cmd -DryRun      # Preview without changing CSV
-.\RebuildNative.cmd              # Rebuild and install sessions from CSV
+.\CollectNative.bat              # Collect CSV only, without compiling
+.\CollectNative.bat -DryRun      # Preview without changing CSV
+.\RebuildNative.bat              # Rebuild and install sessions from CSV
 ```
 
-`CollectNative.cmd` does not change the active DLL or manifest. Until rebuilding,
-CSV may contain more variants than the installed library. `UpdateNative.cmd`
+`CollectNative.bat` does not change the active DLL or manifest. Until rebuilding,
+CSV may contain more variants than the installed library. `UpdateNative.bat`
 detects this pending update by row count. `-Force` forces a rebuild;
 `-SkipBuild` uses existing Rust tools, and `-Gcc PATH` selects MinGW GCC.
 If coverage was collected separately, `-Verify` checks one compatible recording.
@@ -80,13 +80,13 @@ collected CSV in place for fixes or another build. To restore coverage, copy
 Commit changed CSV files and `native/usa/manifest.json`; DLLs and C remain
 local build outputs.
 
-`test.ps1` includes collection and installation tests covering incompatible
+`scripts/windows/test.ps1` includes collection and installation tests covering incompatible
 audits, distinct RAM variants and rollback after partial installation failure.
 They can also be run separately:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/native-coverage.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/native-install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/tests/native-coverage.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/tests/native-install.ps1
 ```
 
 ## Why validation matters

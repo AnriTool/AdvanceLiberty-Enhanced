@@ -29,7 +29,7 @@ statistics and names. Text drawn into images is excluded.
 From the project directory:
 
 ```powershell
-.\Play.cmd
+.\Play.bat
 ```
 
 To select a pack:
@@ -99,7 +99,7 @@ timing constraints still need checks per text category. Characters without
 either a glyph or a standard representation are rejected with an explanation.
 
 Session recording copies exact pack bytes, including alphabet/font data, to
-`language-pack.json` in the recording directory. replay.ps1 and the runtime
+`language-pack.json` in the recording directory. scripts/windows/replay.ps1 and the runtime
 automatically read that snapshot beside input.gba-input, so later edits to the
 source pack do not change old replays. If metadata requires a pack but its
 snapshot is missing, replay fails explicitly. Saved user language preferences

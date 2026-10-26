@@ -2,9 +2,9 @@
 
 **English** | [Русский](../ru/DROP_LIFETIME.md)
 
-Normal `Play.cmd` launches use a target lifetime of 30 seconds.
-`Play.cmd -DropLifetime 0` restores original rules;
-`Play.cmd -DropLifetime N` selects another duration, from 1 to 300 seconds.
+Normal `Play.bat` launches use a target lifetime of 30 seconds.
+`Play.bat -DropLifetime 0` restores original rules;
+`Play.bat -DropLifetime N` selects another duration, from 1 to 300 seconds.
 Thirty seconds corresponds to 1792 GBA frames at 16777216/280896 Hz,
 independent of the monitor refresh rate.
 

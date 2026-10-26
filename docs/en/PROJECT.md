@@ -36,7 +36,7 @@ files remain local build outputs.
 ## Directories
 
 `src/`, `resources/` and `vendor/` are build inputs. `tools/aot/` contains the
-native instruction generator and disassemblers. `tools/diagnostics/` and
+native instruction generator and disassemblers. `scripts/windows/diagnostics/`, `tools/diagnostics/` and
 `tools/localization/` provide reusable analysis and translation utilities.
 Original third-party licenses and authorship are retained in `vendor/`.
 
@@ -47,7 +47,7 @@ build outputs. `target/` contains the Cargo cache and executables;
 installation. Minimal private regression fixtures live in `test-data/`.
 
 `release/` contains source instructions and notices for the distribution;
-`dist/` contains packaged user folders and ZIPs. `package.ps1` uses an explicit
+`dist/` contains packaged user folders and ZIPs. `scripts/windows/package.ps1` uses an explicit
 file list and excludes ROMs, user data, fixtures, research history and developer
 tools. Documentation uses matching `docs/en/` and `docs/ru/` trees.
 
@@ -60,15 +60,17 @@ Rebuilding native profiles additionally requires MinGW x64 GCC, separately
 from Rust's MSVC toolchain. No separate gba-recomp checkout or patch step is needed.
 
 ```powershell
-./build.ps1 -Offline -Tools
-./test.ps1 -Offline -Sdl
-./Play.cmd -SkipBuild
-./package.ps1 -Offline
+./scripts/windows/build.ps1 -Offline -Tools
+./scripts/windows/test.ps1 -Offline -Sdl
+./Play.bat -SkipBuild
+./scripts/windows/package.ps1 -Offline
 ```
 
-`Play.cmd` uses the development checkout's saves and preferences. The portable
+`Play.bat` uses the development checkout's saves and preferences. The portable
 release runs through its EXE without BAT/PowerShell or a compiler. CollectNative,
 UpdateNative and RebuildNative retain their separate roles.
 
 [Portable build](PORTABLE.md) · [Native coverage](NATIVE_WORKFLOW.md) ·
 [Local fixtures](../../test-data/README.md)
+
+[Linux build and script layout](LINUX.md): native `.so` profiles, source launch and `.tar.gz` packaging.
