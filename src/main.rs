@@ -887,6 +887,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut api = RtApi {
         guard,
         interp_one: interp,
+        read16: mouse_aim::read16,
         read32: mouse_aim::read32,
         ..RT_API
     };

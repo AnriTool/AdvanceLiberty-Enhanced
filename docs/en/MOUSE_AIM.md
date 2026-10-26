@@ -48,9 +48,11 @@ updates are unchanged.
 
 ## Implementation
 
-mouse_aim.rs selectively overrides five native USA ROM angle reads. It checks
+mouse_aim.rs selectively overrides seven native USA ROM angle reads. It checks
 the ROM instruction, physics address, current-player pointer and entity type.
-Overrides affect animation, part placement and shot initialization. Physics
+Overrides affect animation, part placement, shot initialization, and the
+flamethrower's continuous direction and nozzle offset (including its 16-bit
+integer heading read). Physics
 reads that calculate WASD movement receive the original angle. The ROM, DLLs
 and angle stored in guest memory are not rewritten. The RtApi hook also applies
 to internal AOT exits through the shared active API. Interpreter mode is unsupported.

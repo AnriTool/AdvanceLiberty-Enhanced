@@ -117,7 +117,7 @@ pub fn present(bus: &MemMap, enabled: bool) {
         .flatten();
     PRESENTED.with(|p| p.set(target));
 }
-fn override_angle(bus: &MemMap, pc: u32, address: u32) -> Option<u32> {
+fn override_angle(bus: &MemMap, pc: u32, address: u32, width: u32) -> Option<u32> {
     // Verify the exact load instruction as well as its PC. Other reads,
     // especially 0801d21a (movement), must observe unmodified guest memory.
     let opcode = match pc {
@@ -125,11 +125,18 @@ fn override_angle(bus: &MemMap, pc: u32, address: u32) -> Option<u32> {
         0x0801453e => 0x6800,
         0x08024a24 | 0x08024c26 => 0x68c0,
         0x080270bc => 0x68c0,
+        // Continuous flame direction and the nozzle's integer heading.
+        0x08025516 => 0x68c2,
+        0x08025576 => 0x5e80,
         _ => return None,
     };
+    let half = pc == 0x08025576;
+    if width != if half { 2 } else { 4 } {
+        return None;
+    }
     let aim = ACTIVE.with(Cell::get)?;
     let i = (pc - 0x08000000) as usize;
-    if address != aim.position + 12
+    if address != aim.position + if half { 14 } else { 12 }
         || bus.rom.get(i..i + 2) != Some(opcode.to_le_bytes().as_slice())
         || word(bus, 0x02000f10) != Some(aim.actor)
         || word(bus, aim.actor + 24) != Some(aim.position)
@@ -137,12 +144,17 @@ fn override_angle(bus: &MemMap, pc: u32, address: u32) -> Option<u32> {
     {
         return None;
     }
-    Some(aim.angle)
+    Some(if half { aim.angle >> 16 } else { aim.angle })
+}
+pub extern "C" fn read16(ptr: *mut c_void, address: u32) -> u32 {
+    let value = (RT_API.read16)(ptr, address);
+    let m = unsafe { &*(ptr as *const Machine) };
+    override_angle(&m.bus, m.cpu.regs[15], address, 2).unwrap_or(value)
 }
 pub extern "C" fn read32(ptr: *mut c_void, address: u32) -> u32 {
     let value = (RT_API.read32)(ptr, address);
     let m = unsafe { &*(ptr as *const Machine) };
-    override_angle(&m.bus, m.cpu.regs[15], address).unwrap_or(value)
+    override_angle(&m.bus, m.cpu.regs[15], address, 4).unwrap_or(value)
 }
 
 pub fn load(path: &Path) -> Result<Vec<(u64, Option<u16>)>, Box<dyn std::error::Error>> {
@@ -217,13 +229,43 @@ mod tests {
             }))
         });
         assert_eq!(
-            override_angle(&bus, 0x08024a24, 0x0200200c),
+            override_angle(&bus, 0x08024a24, 0x0200200c, 4),
             Some(128 << 16)
         );
-        assert_eq!(override_angle(&bus, 0x0801d21a, 0x0200200c), None);
-        assert_eq!(override_angle(&bus, 0x08024a24, 0x0200210c), None);
+        assert_eq!(override_angle(&bus, 0x0801d21a, 0x0200200c, 4), None);
+        assert_eq!(override_angle(&bus, 0x08024a24, 0x0200210c, 4), None);
+        bus.rom[0x25516..0x25518].copy_from_slice(&0x68c2u16.to_le_bytes());
+        bus.rom[0x25576..0x25578].copy_from_slice(&0x5e80u16.to_le_bytes());
+        for angle in [0, 256, 512, 768, 1023] {
+            ACTIVE.with(|a| {
+                a.set(Some(Aim {
+                    actor: 0x02001000,
+                    position: 0x02002000,
+                    angle: angle << 16,
+                }))
+            });
+            assert_eq!(
+                override_angle(&bus, 0x08025516, 0x0200200c, 4),
+                Some(angle << 16)
+            );
+            assert_eq!(override_angle(&bus, 0x08025576, 0x0200200e, 2), Some(angle));
+        }
+        // Wrong access size, unrelated actor, or changed ROM must never be patched.
+        assert_eq!(override_angle(&bus, 0x08025576, 0x0200200e, 4), None);
+        assert_eq!(override_angle(&bus, 0x08025516, 0x0200200c, 2), None);
+        assert_eq!(override_angle(&bus, 0x08025576, 0x0200210e, 2), None);
+        bus.rom[0x25576] = 0;
+        assert_eq!(override_angle(&bus, 0x08025576, 0x0200200e, 2), None);
+        put(&mut bus, 0x02001018, 0x02002100);
+        assert_eq!(override_angle(&bus, 0x08025516, 0x0200200c, 4), None);
+        put(&mut bus, 0x02001018, 0x02002000);
+        put(&mut bus, 0x02001008, 4);
+        assert_eq!(override_angle(&bus, 0x08025516, 0x0200200c, 4), None);
+        put(&mut bus, 0x02001008, 2);
         put(&mut bus, 0x02000f10, 0x02001100);
-        assert_eq!(override_angle(&bus, 0x08024a24, 0x0200200c), None);
+        assert_eq!(override_angle(&bus, 0x08024a24, 0x0200200c, 4), None);
+        assert_eq!(override_angle(&bus, 0x08025516, 0x0200200c, 4), None);
         ACTIVE.with(|a| a.set(None));
+        assert_eq!(override_angle(&bus, 0x08025516, 0x0200200c, 4), None);
     }
 }
