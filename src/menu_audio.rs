@@ -48,6 +48,11 @@ struct Voice {
 #[derive(Default)]
 struct Mixer {
     game: VecDeque<i16>,
+    game_active: bool,
+    underruns: u64,
+    callback_samples: usize,
+    target_samples: usize,
+    priming: bool,
     click: Option<Voice>,
     #[cfg(test)]
     clicks: u64,
@@ -61,8 +66,22 @@ impl Mixer {
         }
     }
     fn render(&mut self, out: &mut [i16]) {
+        let ready = !self.priming || self.game.len() >= self.target_samples;
+        if ready {
+            self.priming = false;
+        }
+        if self.game_active && (!ready || self.game.len() < out.len()) {
+            self.underruns += 1;
+            // Rebuild one callback of reserve after a genuine output gap.
+            self.target_samples = self.callback_samples * 2;
+            self.priming = true;
+        }
         for sample in out {
-            let mut value = self.game.pop_front().unwrap_or(0) as i32;
+            let mut value = if ready {
+                self.game.pop_front().unwrap_or(0) as i32
+            } else {
+                0
+            };
             if let Some(voice) = &mut self.click {
                 // 080328cc uses ROM shifts [32, 2, 1, 0]: Off, 1/4, 1/2, full.
                 let gain = [0, 1, 2, 4][voice.volume.min(3) as usize];
@@ -94,7 +113,15 @@ impl Output {
                 channels: Some(2),
                 samples: Some(2048),
             },
-            |_| Mixer::default(),
+            |spec| {
+                let count = spec.samples as usize * spec.channels as usize;
+                Mixer {
+                    callback_samples: count,
+                    target_samples: count,
+                    priming: true,
+                    ..Default::default()
+                }
+            },
         )?;
         device.resume();
         Ok(Self { device })
@@ -103,14 +130,24 @@ impl Output {
         self.device.lock().set_volume(volume);
     }
     pub fn clear(&mut self) {
-        self.device.lock().game.clear();
+        let mut mixer = self.device.lock();
+        mixer.game.clear();
+        mixer.game_active = false;
+        mixer.target_samples = mixer.callback_samples;
+        mixer.priming = true;
     }
     pub fn size(&mut self) -> u32 {
         (self.device.lock().game.len() * 2) as u32
     }
     pub fn queue_audio(&mut self, samples: &[i16]) -> Result<(), String> {
-        self.device.lock().game.extend(samples.iter().copied());
+        let mut mixer = self.device.lock();
+        mixer.game.extend(samples.iter().copied());
+        mixer.game_active |= !samples.is_empty();
         Ok(())
+    }
+    pub fn health(&mut self) -> (u32, u64) {
+        let mixer = self.device.lock();
+        ((mixer.game.len() * 2) as u32, mixer.underruns)
     }
     #[cfg(test)]
     pub(crate) fn test_state(&mut self) -> (u64, usize) {
@@ -143,6 +180,62 @@ impl Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rebuffering_preserves_pcm_order_and_keeps_menu_clicks_immediate() {
+        let mut mixer = Mixer {
+            game_active: true,
+            callback_samples: 4,
+            target_samples: 4,
+            priming: true,
+            ..Default::default()
+        };
+        mixer.game.extend([1, 2]);
+        mixer.click = Some(Voice {
+            samples: Arc::from([100, 100, 100, 100]),
+            position: 0,
+            volume: 3,
+        });
+        let mut out = [0; 4];
+        mixer.render(&mut out);
+        assert_eq!(out, [100; 4]);
+        assert_eq!(mixer.game.iter().copied().collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(mixer.target_samples, 8);
+        mixer.game.extend([3, 4, 5, 6, 7, 8]);
+        mixer.render(&mut out);
+        assert_eq!(out, [1, 2, 3, 4]);
+        mixer.render(&mut out);
+        assert_eq!(out, [5, 6, 7, 8]);
+        mixer.render(&mut out);
+        assert_eq!(out, [0; 4]);
+        mixer.game.extend([9, 10, 11, 12]);
+        mixer.render(&mut out);
+        assert_eq!(out, [0; 4]);
+        assert_eq!(mixer.game.len(), 4);
+        mixer.game.extend([13, 14, 15, 16]);
+        mixer.render(&mut out);
+        assert_eq!(out, [9, 10, 11, 12]);
+        mixer.render(&mut out);
+        assert_eq!(out, [13, 14, 15, 16]);
+    }
+    #[test]
+    fn audio_health_distinguishes_starved_game_from_paused_menu_clicks() {
+        let mut mixer = Mixer::default();
+        mixer.render(&mut [0; 4]);
+        assert_eq!(mixer.underruns, 0);
+        mixer.game_active = true;
+        mixer.game.extend([11, 12]);
+        let mut output = [0; 4];
+        mixer.render(&mut output);
+        assert_eq!(output, [11, 12, 0, 0]);
+        assert_eq!(mixer.underruns, 1);
+        mixer.game.extend([1; 8]);
+        mixer.render(&mut output);
+        assert_eq!(mixer.underruns, 1);
+        mixer.game_active = false;
+        mixer.game.clear();
+        mixer.render(&mut output);
+        assert_eq!(mixer.underruns, 1);
+    }
     #[test]
     fn paused_game_clear_preserves_click_and_resume_mixes_without_delaying_game() {
         let mut mixer = Mixer::default();

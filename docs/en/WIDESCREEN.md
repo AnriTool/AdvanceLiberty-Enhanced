@@ -67,3 +67,46 @@ written to `camera-summary.txt`.
 wide composition during diagnostic replays without a window.
 
 [HUD scaling](HUD_LAYOUT.md) · [Mouse aiming](MOUSE_AIM.md) · [Menus](MENUS.md)
+
+
+## Roof clipping and frame-time diagnostics
+
+Roof orientation uses the original model basis when clipping or integer UV
+rounding collapses a diagonal axis. Both screen coordinates and the rotated,
+clamped UV coordinates are checked. Native descriptor validation remains intact;
+this only corrects the host presentation and its material cache.
+
+Immutable ROM atlases and their orientation variants are shared within each
+capture. RAM textures are read again on every native submission. The indexed
+building layer is reused only for the same captured scene, camera displacement,
+viewport and texture-mapping mode. Palette effects, ground, sprites and HUD still
+update normally. The layer cache holds one image.
+
+Opt-in diagnostic sessions include `frame-profile.csv`. `native_ns` includes
+native execution and capture hooks, `render_ns` measures Enhanced presentation,
+and `audio_ns` measures host DSP. `total_ns` includes presentation/pacing and
+recording overhead. GBA FIFO counters distinguish cartridge audio starvation
+from host output: `queued_audio_bytes` and `audio_underruns` describe the playback
+queue. Host underruns count callbacks with insufficient game samples; cleared
+or paused audio is excluded. FPS measures average presented frames, so brief
+budget overruns can still occur near 60 FPS.
+
+The low-level runtime also accepts `--frame-profile NEW_CSV` and
+`--roof-trace NEW_CSV START_FRAME END_FRAME`. Roof traces contain native,
+model-derived and final orientations plus clipped endpoints. Normal launches
+without diagnostic recording create neither report.
+
+## Composition and audio buffering
+
+At output sizes of at least 720 × 480 on a multicore system, Enhanced composition
+uses two independent row regions: one worker thread and the calling thread.
+Terrain, sprites and pixel effects keep the same sampling and drawing order.
+Smaller outputs and single-core systems use one region. The prepared HUD layer
+is cached until its source pixels, layout or viewport change.
+
+Host audio waits for one callback of samples after clearing its queue. If output
+runs dry, it rebuilds a two-callback queue before resuming, retaining a small
+reserve against the next late frame. This adds buffering, without changing sample
+order or playback speed. Host menu clicks continue while game audio is buffering.
+Rebuffering cannot compensate for sustained frame times above the game budget;
+use the frame profile to distinguish rendering load from audio processing cost.

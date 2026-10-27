@@ -221,6 +221,9 @@ pub struct Policy {
     pub expired: u64,
 }
 impl Policy {
+    pub fn seconds(&self) -> u32 {
+        (self.frames * 280_896 / 16_777_216) as u32
+    }
     pub fn new(seconds: u32) -> Self {
         Self {
             frames: (seconds as u64 * 16_777_216).div_ceil(280_896),

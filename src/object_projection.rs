@@ -932,6 +932,49 @@ impl Sprite {
         }
     }
 }
+/// Prepared screen-fixed BG1 layer. Changes to text, palette, layout or viewport invalidate it.
+#[derive(Default)]
+pub struct HudCache {
+    last: Option<(
+        (crate::hud_layout::Settings, usize, usize, usize, bool),
+        Arc<Vec<Option<u16>>>,
+        Arc<Vec<Option<u16>>>,
+    )>,
+    pub hits: u64,
+    pub builds: u64,
+}
+impl HudCache {
+    fn layer(
+        &mut self,
+        source: &Arc<Vec<Option<u16>>>,
+        settings: crate::hud_layout::Settings,
+        view: crate::viewport::View,
+        standard: bool,
+    ) -> Arc<Vec<Option<u16>>> {
+        let key = (settings, view.width, view.height, view.scale, standard);
+        if let Some((old, input, output)) = &self.last {
+            if *old == key && (Arc::ptr_eq(source, input) || source.as_ref() == input.as_ref()) {
+                self.hits += 1;
+                return output.clone();
+            }
+        }
+        let layout = (settings != Default::default() || view.padding != 0)
+            .then(|| crate::hud_layout::Layout::new_view(settings, view, standard));
+        let mut pixels = vec![None; view.width * view.height];
+        for y in 0..view.height {
+            for x in 0..view.width {
+                pixels[y * view.width + x] = match &layout {
+                    Some(layout) => layout.pixel(source, x, y),
+                    None => source[y / view.scale * 240 + x / view.scale],
+                };
+            }
+        }
+        let pixels = Arc::new(pixels);
+        self.last = Some((key, source.clone(), pixels.clone()));
+        self.builds += 1;
+        pixels
+    }
+}
 #[derive(Clone)]
 pub struct Snapshot {
     sprites: Vec<Sprite>,
@@ -1478,6 +1521,108 @@ impl Snapshot {
         hud_settings: crate::hud_layout::Settings,
         world: Option<&crate::ground_projection::WorldGround>,
     ) -> Vec<u16> {
+        self.compose_view_cached(
+            source,
+            building,
+            palette,
+            delta,
+            view,
+            zoom,
+            hud_settings,
+            world,
+            None,
+        )
+    }
+    pub fn compose_view_cached(
+        &self,
+        source: &MemMap,
+        building: &[u8],
+        palette: &[u8],
+        delta: [i32; 2],
+        view: crate::viewport::View,
+        zoom: f64,
+        hud_settings: crate::hud_layout::Settings,
+        world: Option<&crate::ground_projection::WorldGround>,
+        hud_cache: Option<&mut HudCache>,
+    ) -> Vec<u16> {
+        let standard = self.sprites.iter().any(|s| {
+            s.priority == 0
+                && s.slope == [0.; 2]
+                && s.x == 200
+                && s.y == 8
+                && s.width == 32
+                && s.height == 32
+        });
+        let settings = if standard {
+            hud_settings
+        } else {
+            Default::default()
+        };
+        let prepared = hud_cache.map(|cache| cache.layer(&self.hud, settings, view, standard));
+        let prepared = prepared.as_ref().map(|layer| layer.as_slice());
+        let mut image = vec![0; view.width * view.height];
+        static MULTICORE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let parallel = image.len() >= 720 * 480
+            && *MULTICORE
+                .get_or_init(|| std::thread::available_parallelism().is_ok_and(|n| n.get() >= 2));
+        if parallel {
+            let middle = view.height / 2;
+            let (top, bottom) = image.split_at_mut(middle * view.width);
+            std::thread::scope(|scope| {
+                scope.spawn(move || {
+                    self.compose_tile(
+                        source, building, palette, delta, view, zoom, settings, world, prepared, 0,
+                        middle, top,
+                    )
+                });
+                self.compose_tile(
+                    source,
+                    building,
+                    palette,
+                    delta,
+                    view,
+                    zoom,
+                    settings,
+                    world,
+                    prepared,
+                    middle,
+                    view.height,
+                    bottom,
+                );
+            });
+        } else {
+            self.compose_tile(
+                source,
+                building,
+                palette,
+                delta,
+                view,
+                zoom,
+                settings,
+                world,
+                prepared,
+                0,
+                view.height,
+                &mut image,
+            );
+        }
+        image
+    }
+    fn compose_tile(
+        &self,
+        source: &MemMap,
+        building: &[u8],
+        palette: &[u8],
+        delta: [i32; 2],
+        view: crate::viewport::View,
+        zoom: f64,
+        hud_settings: crate::hud_layout::Settings,
+        world: Option<&crate::ground_projection::WorldGround>,
+        prepared_hud: Option<&[Option<u16>]>,
+        first: usize,
+        last: usize,
+        image: &mut [u16],
+    ) {
         let scale = view.scale;
         use crate::color_effects::{Effects, Pixel};
         // The USA gameplay HUD has a screen-fixed 32x32 weapon OBJ at (200,8).
@@ -1496,18 +1641,25 @@ impl Snapshot {
         } else {
             Default::default()
         };
-        let layout = (hud_settings != Default::default() || view.padding != 0)
+        let layout = (prepared_hud.is_none()
+            && (hud_settings != Default::default() || view.padding != 0))
             .then(|| crate::hud_layout::Layout::new_view(hud_settings, view, standard_hud));
-        let hud_pixel = |x: usize, y: usize| match &layout {
-            Some(layout) => layout.pixel(&self.hud, x, y),
-            None => self.hud[y / scale * 240 + x / scale],
+        let hud_pixel = |x: usize, y: usize| {
+            if let Some(layer) = &prepared_hud {
+                return layer[y * view.width + x];
+            }
+            match &layout {
+                Some(layout) => layout.pixel(&self.hud, x, y),
+                None => self.hud[y / scale * 240 + x / scale],
+            }
         };
         let width = view.width;
         let height = view.height;
-        let len = width * height;
+        let len = width * (last - first);
         let control = half(&source.io, 0);
-        let ground =
-            crate::ground_projection::continuous_layer_world(source, view, delta, zoom, world);
+        let ground = crate::ground_projection::continuous_layer_rows_world(
+            source, view, delta, zoom, world, first, last,
+        );
         let mut objects = vec![None; len];
         let mut order: Vec<_> = self.sprites.iter().collect();
         order.sort_by_key(|s| std::cmp::Reverse((s.priority, s.order)));
@@ -1580,9 +1732,9 @@ impl Snapshot {
                 }
                 let x_start = x_bound(bounds[0]);
                 let x_end = x_bound(bounds[2]);
-                let y_start = bound(bounds[1], height);
-                let y_end = bound(bounds[3], height);
-                if x_start == x_end || y_start == y_end {
+                let y_start = bound(bounds[1], height).max(first);
+                let y_end = bound(bounds[3], height).min(last);
+                if x_start >= x_end || y_start >= y_end {
                     continue;
                 }
                 let local_x: Vec<_> = (x_start..x_end)
@@ -1605,7 +1757,7 @@ impl Snapshot {
                             [local_x, local_y]
                         };
                         if let Some(color) = s.sample_local(local, true) {
-                            objects[y * width + x] = Some((
+                            objects[(y - first) * width + x] = Some((
                                 Pixel {
                                     color,
                                     layer: 4,
@@ -1629,7 +1781,6 @@ impl Snapshot {
             layer: 5,
             semi: false,
         };
-        let mut image = vec![0; len];
         let effects = Effects::new(&source.io);
         let windows = crate::rect_windows::Windows::new(&source.io)
             .with_view(
@@ -1646,13 +1797,14 @@ impl Snapshot {
         if effects.inactive(self.sprites.iter().any(|s| s.semi)) {
             // No second color can affect output. Resolve just the nearest
             // visible surface; avoid blend bookkeeping for every pixel.
-            for y in 0..height {
-                for x in 0..width {
+            for (local_y, row) in image.chunks_mut(width).enumerate() {
+                let y = first + local_y;
+                for (x, output) in row.iter_mut().enumerate() {
                     let i = y * width + x;
                     let mask = windows.mask(x, y);
                     let mut front = (backdrop.color, 40);
                     if control & 0x400 != 0 && mask & 4 != 0 {
-                        if let Some(color) = ground[i] {
+                        if let Some(color) = ground[local_y * width + x] {
                             front = (color, priorities[2] * 8 + 3);
                         }
                     }
@@ -1671,18 +1823,19 @@ impl Snapshot {
                             front = (color, priorities[1] * 8 + 2);
                         }
                     }
-                    if let Some((pixel, rank, _)) = objects[i] {
+                    if let Some((pixel, rank, _)) = objects[local_y * width + x] {
                         if mask & 16 != 0 && rank < front.1 {
                             front = (pixel.color, rank);
                         }
                     }
-                    image[i] = front.0 & 0x7fff;
+                    *output = front.0 & 0x7fff;
                 }
             }
-            return image;
+            return;
         }
-        for y in 0..height {
-            for x in 0..width {
+        for (local_y, row) in image.chunks_mut(width).enumerate() {
+            let y = first + local_y;
+            for (x, output) in row.iter_mut().enumerate() {
                 let i = y * width + x;
                 let mask = windows.mask(x, y);
                 let mut first = (backdrop, 40u16);
@@ -1718,7 +1871,7 @@ impl Snapshot {
                     }
                 }
                 if control & 0x400 != 0 && mask & 4 != 0 {
-                    if let Some(color) = ground[i] {
+                    if let Some(color) = ground[local_y * width + x] {
                         insert(
                             Pixel {
                                 color,
@@ -1729,18 +1882,18 @@ impl Snapshot {
                         );
                     }
                 }
-                if let Some((pixel, rank, _)) = objects[i] {
+                if let Some((pixel, rank, _)) = objects[local_y * width + x] {
                     if mask & 16 != 0 {
                         insert(pixel, rank);
                     }
                 }
-                image[i] = effects.apply_window(first.0, second.0, mask & 32 != 0);
+                *output = effects.apply_window(first.0, second.0, mask & 32 != 0);
                 // The game alternates the deck/OBJ priority to suggest visibility
                 // beneath a bridge. Keep that world OBJ at a steady half opacity
                 // on either phase, without retaining sprites from older scenes.
                 // Buildings, HUD and other foreground surfaces still occlude it.
                 if windows.bridge_deck(mask) && mask & 16 != 0 {
-                    if let Some((object, _, true)) = objects[i] {
+                    if let Some((object, _, true)) = objects[local_y * width + x] {
                         if object.semi {
                             let ground = if first.0.layer == 2 && second.0.layer == 4 {
                                 Some(first.0.color)
@@ -1750,7 +1903,7 @@ impl Snapshot {
                                 None
                             };
                             if let Some(ground) = ground {
-                                image[i] =
+                                *output =
                                     crate::color_effects::bridge_translucency(object.color, ground);
                             }
                         }
@@ -1758,7 +1911,6 @@ impl Snapshot {
                 }
             }
         }
-        image
     }
 }
 // BG1 is a text background in mode 1. Read its tile spans directly instead
@@ -1844,6 +1996,131 @@ pub(crate) fn raw_layers(source: &MemMap, layers: u16, backdrop: u16) -> Vec<u16
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tiled_compositor_matches_full_frame_for_sprite_boundaries_and_effects() {
+        use super::*;
+        let mut bus = MemMap::new(Vec::new());
+        bus.io[..2].copy_from_slice(&0x1741u16.to_le_bytes());
+        bus.vram.fill(0x11);
+        for (i, color) in [0x001f, 0x03e0, 0x7c00].into_iter().enumerate() {
+            bus.palette[(i + 1) * 2..(i + 1) * 2 + 2]
+                .copy_from_slice(&(color as u16).to_le_bytes());
+            bus.palette[512 + (i + 1) * 2..514 + (i + 1) * 2]
+                .copy_from_slice(&(color as u16).to_le_bytes());
+        }
+        bus.oam[..2].copy_from_slice(&76u16.to_le_bytes());
+        bus.oam[2..4].copy_from_slice(&((3 << 14) | 100u16).to_le_bytes());
+        let sprite = Sprite::read(&bus, 0).unwrap().unwrap();
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        let building: Vec<u8> = (0..view.width * view.height)
+            .map(|i| if i % 17 == 0 { 2 } else { 0 })
+            .collect();
+        for control in [0u16, 0x3f41, 0x3fc7] {
+            bus.io[0x50..0x52].copy_from_slice(&control.to_le_bytes());
+            bus.io[0x52..0x54].copy_from_slice(&0x0808u16.to_le_bytes());
+            let snapshot = Snapshot::new(vec![sprite.clone()], &bus);
+            let settings = crate::hud_layout::Settings {
+                radar: crate::hud_layout::Size::Medium,
+                ..Default::default()
+            };
+            let mut scalar = vec![0; building.len()];
+            snapshot.compose_tile(
+                &bus,
+                &building,
+                &bus.palette,
+                [12000, -8000],
+                view,
+                1.03,
+                settings,
+                None,
+                None,
+                0,
+                view.height,
+                &mut scalar,
+            );
+            let parallel = snapshot.compose_view(
+                &bus,
+                &building,
+                &bus.palette,
+                [12000, -8000],
+                view,
+                1.03,
+                settings,
+                None,
+            );
+            assert_eq!(parallel, scalar);
+            let mut cache = HudCache::default();
+            let cached = snapshot.compose_view_cached(
+                &bus,
+                &building,
+                &bus.palette,
+                [12000, -8000],
+                view,
+                1.03,
+                settings,
+                None,
+                Some(&mut cache),
+            );
+            assert_eq!(cached, scalar);
+        }
+    }
+    #[test]
+    fn prepared_hud_matches_layout_and_invalidates_text_palette_and_view_changes() {
+        use super::*;
+        let mut source = Arc::new(
+            (0..240 * 160)
+                .map(|i| (i % 11 == 0).then_some((i & 0x7fff) as u16))
+                .collect(),
+        );
+        let mut cache = HudCache::default();
+        for standard in [true, false] {
+            for aspect in [
+                crate::viewport::Aspect::Original,
+                crate::viewport::Aspect::Wide,
+            ] {
+                let view = crate::viewport::View::new(3, aspect);
+                for size in [
+                    crate::hud_layout::Size::Original,
+                    crate::hud_layout::Size::Medium,
+                ] {
+                    let settings = crate::hud_layout::Settings {
+                        radar: size,
+                        status: size,
+                        messages: size,
+                    };
+                    let layout = crate::hud_layout::Layout::new_view(settings, view, standard);
+                    let output = cache.layer(&source, settings, view, standard);
+                    for y in 0..view.height {
+                        for x in 0..view.width {
+                            assert_eq!(output[y * view.width + x], layout.pixel(&source, x, y));
+                        }
+                    }
+                    assert!(Arc::ptr_eq(
+                        &output,
+                        &cache.layer(&source, settings, view, standard)
+                    ));
+                    let equal = Arc::new(source.as_ref().clone());
+                    assert!(Arc::ptr_eq(
+                        &output,
+                        &cache.layer(&equal, settings, view, standard)
+                    ));
+                    for value in [Some(0x1234), None] {
+                        Arc::make_mut(&mut source)[24 * 240 + 24] = value;
+                        let changed = cache.layer(&source, settings, view, standard);
+                        assert!(!Arc::ptr_eq(&output, &changed));
+                        for y in 0..view.height {
+                            for x in 0..view.width {
+                                assert_eq!(
+                                    changed[y * view.width + x],
+                                    layout.pixel(&source, x, y)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn world_placement_keeps_positive_coordinates_beyond_gba_right_edge() {
         let mut m = Machine::new(Vec::new());

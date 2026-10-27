@@ -156,6 +156,8 @@ pub struct Preview {
     wide: bool,
     ground_rom: Option<std::sync::Arc<Vec<u8>>>,
     material_bank: building_material::MaterialBank,
+    building_layer: building_material::LayerCache,
+    hud_layer: object_projection::HudCache,
     motion_roots: object_projection::MotionRoots,
     pending: Option<Pending>,
     current: Option<Scene>,
@@ -274,6 +276,8 @@ impl Preview {
             wide: false,
             ground_rom: None,
             material_bank: Default::default(),
+            building_layer: Default::default(),
+            hud_layer: Default::default(),
             motion_roots: object_projection::MotionRoots::default(),
             pending: None,
             current: None,
@@ -755,7 +759,9 @@ impl Preview {
             let mut reset = false;
             let geometry_start = std::time::Instant::now();
             let viewport = crate::viewport::View::new(3, settings.aspect);
-            let layer = match scene.materials.live_layer_view(
+            let layer = match self.building_layer.render(
+                &scene.materials,
+                scene.frame,
                 [shift[0], shift[1], dz],
                 viewport,
                 settings.textures,
@@ -789,7 +795,9 @@ impl Preview {
                         alpha = 1.0;
                     }
                     reset = true;
-                    scene.materials.live_layer_view(
+                    self.building_layer.render(
+                        &scene.materials,
+                        scene.frame,
                         [shift[0], shift[1], dz],
                         viewport,
                         settings.textures,
@@ -845,7 +853,7 @@ impl Preview {
             if let Some(f) = self.sprite_presented.as_mut() {
                 objects.trace_anchors(bus.frames, shift, f);
             }
-            let image = objects.compose_view(
+            let image = objects.compose_view_cached(
                 &scene.graphics,
                 &layer,
                 &scene.graphics.palette,
@@ -854,6 +862,7 @@ impl Preview {
                 zoom,
                 settings.hud,
                 scene.ground_world.as_ref(),
+                Some(&mut self.hud_layer),
             );
             compose_ns = compose_start.elapsed().as_nanos();
             Ok::<_, String>((image, alpha < 1.0, reset))
@@ -918,6 +927,10 @@ impl Preview {
         self.status
     }
     pub fn finish(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        eprintln!(
+            "hud_cache hits={} rebuilds={}",
+            self.hud_layer.hits, self.hud_layer.builds
+        );
         eprintln!("camera_preview_stages validate_ms={:.3} graphics_ms={:.3} geometry_ms={:.3} compose_ms={:.3}",
             self.validate_ns as f64/1e6,self.graphics_ns as f64/1e6,self.geometry_ns as f64/1e6,self.compose_ns as f64/1e6);
         eprintln!("camera_preview scenes={} rejected={} rendered={} original={} blended={} render_ms={:.3}",self.accepted,self.rejected,self.rendered,self.original,self.blended,self.render_ns as f64/1e6);

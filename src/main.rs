@@ -61,6 +61,7 @@ mod save;
 mod scene_replay;
 mod session;
 mod viewport;
+const FRAME_PROFILE_HEADER: &str = "frame,total_ns,native_ns,render_ns,audio_ns,accepted_scenes,audio_samples,fifo_underruns_a,fifo_underruns_b,fifo_refills_a,fifo_refills_b,queued_audio_bytes,audio_underruns";
 type BlockFn = extern "C" fn(*const RtApi, *mut c_void) -> u32;
 #[derive(Default)]
 struct Counters {
@@ -279,6 +280,18 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     #[cfg(feature = "desktop")]
     let override_textures = args.iter().any(|s| s == "--affine-textures");
     let mut render_settings = render_settings::Settings::default();
+    if let Some(index) = args.iter().position(|s| s == "--hud-scale") {
+        let size = hud_layout::Size::parse(
+            args.get(index + 1)
+                .ok_or("--hud-scale requires 50,65,75,85 or 100")?,
+        )?;
+        render_settings.hud = hud_layout::Settings {
+            radar: size,
+            status: size,
+            messages: size,
+        };
+        args.drain(index..=index + 1);
+    }
     if let Some(i) = args.iter().position(|s| s == "--original-renderer") {
         args.remove(i);
         render_settings.renderer = render_settings::Renderer::Original;
@@ -442,7 +455,35 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     } else {
         None
     };
-    let replay_directory = if let Some(index) = args.iter().position(|a| a == "--replays") {
+    // Offline diagnostics reuse the exact gameplay replay format.
+    let offline_play = if let Some(index) = args.iter().position(|s| s == "--replay-play") {
+        let path = args
+            .get(index + 1)
+            .ok_or("--replay-play requires a replay directory")?
+            .clone();
+        args.drain(index..=index + 1);
+        Some(std::path::PathBuf::from(path))
+    } else {
+        None
+    };
+    let offline_record = if let Some(index) = args.iter().position(|s| s == "--replay-record") {
+        let directory = args
+            .get(index + 1)
+            .ok_or("--replay-record requires DIRECTORY START_FRAME")?
+            .clone();
+        let start = args
+            .get(index + 2)
+            .ok_or("--replay-record requires DIRECTORY START_FRAME")?
+            .parse::<u64>()?;
+        args.drain(index..=index + 2);
+        Some((std::path::PathBuf::from(directory), start))
+    } else {
+        None
+    };
+    if offline_play.is_some() && offline_record.is_some() {
+        return Err("Choose recording or playing an offline replay".into());
+    }
+    let mut replay_directory = if let Some(index) = args.iter().position(|a| a == "--replays") {
         if index + 1 >= args.len() {
             return Err("--replays requires a directory".into());
         }
@@ -452,6 +493,9 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     } else {
         std::env::current_dir()?.join("replays")
     };
+    if let Some((directory, _)) = &offline_record {
+        replay_directory = directory.clone();
+    }
     let session_path = if let Some(index) = args.iter().position(|s| s == "--record-session") {
         if index + 1 >= args.len() {
             return Err("--record-session requires a new directory".into());
@@ -477,6 +521,31 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     } else {
         false
     };
+    let mut frame_profile = if let Some(index) = args.iter().position(|s| s == "--frame-profile") {
+        let path = args
+            .get(index + 1)
+            .ok_or("--frame-profile requires a new CSV path")?
+            .clone();
+        args.drain(index..=index + 1);
+        let mut file = std::io::BufWriter::new(fs::File::create_new(path)?);
+        use std::io::Write;
+        writeln!(file, "{FRAME_PROFILE_HEADER}")?;
+        Some(file)
+    } else {
+        None
+    };
+    if let Some(index) = args.iter().position(|s| s == "--roof-trace") {
+        if index + 3 >= args.len() {
+            return Err("--roof-trace requires NEW_CSV START_FRAME END_FRAME".into());
+        }
+        let start = args[index + 2].parse()?;
+        let end = args[index + 3].parse()?;
+        if end < start {
+            return Err("Reversed roof trace range".into());
+        }
+        building_material::open_roof_trace(std::path::Path::new(&args[index + 1]), start, end)?;
+        args.drain(index..=index + 3);
+    }
     let mut audio_output = if let Some(index) = args.iter().position(|s| s == "--audio-out") {
         if index + 1 >= args.len() {
             return Err("--audio-out requires a new PCM file path".into());
@@ -548,6 +617,18 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         );
     }
     let mode = args[4].as_str();
+    if (offline_play.is_some() || offline_record.is_some())
+        && (mode != "multi" || force_interpreter)
+    {
+        return Err("Offline replay tools require native multi mode".into());
+    }
+    if offline_play.is_some()
+        && (save_path.is_some() || session_path.is_some() || check_options.is_some())
+    {
+        return Err(
+            "Offline playback cannot write cartridge saves/sessions or run block checks".into(),
+        );
+    }
     if preview_enabled
         && (!matches!(mode, "multi" | "play")
             || force_interpreter
@@ -591,7 +672,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     if mode == "play" {
         return Err("Build with --features desktop for play".into());
     }
-    let keys = if args[1] == "-" && mode == "play" {
+    let keys = if args[1] == "-" && (mode == "play" || offline_play.is_some()) {
         Vec::new()
     } else {
         input(&args[1])?
@@ -818,6 +899,29 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
             language.label, language.translated, language.extended
         );
     }
+    let mut offline_playback = None;
+    if let Some(path) = &offline_play {
+        let (initial, player) = replay::load(path, &rom)?;
+        m = initial.machine;
+        enhanced_audio = initial.audio;
+        drop_policy = initial.drops;
+        language = initial.language;
+        render_settings = initial.settings;
+        preserve_cash = initial.preserve_cash;
+        drop_start = initial.drop_start;
+        frames = m
+            .bus
+            .frames
+            .checked_add(player.frames.len() as u64)
+            .ok_or("Replay frame overflow")?;
+        offline_playback = Some(player);
+    }
+    if offline_record
+        .as_ref()
+        .is_some_and(|(_, start)| *start >= frames)
+    {
+        return Err("Offline recording start must precede the final frame".into());
+    }
     let mut camera_preview = if preview_enabled {
         Some(camera_preview::Preview::new(preview_output)?)
     } else {
@@ -845,6 +949,18 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     let mut recording = session_path
         .map(|path| session::Session::open(path, &m, &args[0], &args[5..]))
         .transpose()?;
+    let mut profile_is_session = false;
+    if frame_profile.is_none() {
+        if let Some(session) = recording.as_ref() {
+            use std::io::Write;
+            let mut file = std::io::BufWriter::new(fs::File::create_new(
+                session.directory().join("frame-profile.csv"),
+            )?);
+            writeln!(file, "{FRAME_PROFILE_HEADER}")?;
+            frame_profile = Some(file);
+            profile_is_session = true;
+        }
+    }
     if let (Some(recording), Some(language)) = (recording.as_ref(), language.as_ref()) {
         recording.language_pack(&language.bytes)?;
     }
@@ -937,7 +1053,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         "frame,framebuffer_upstream_hash\n"
     });
     let mut replay_recording: Option<replay::Recording> = None;
-    let mut playback: Option<replay::Playback> = None;
+    let mut playback: Option<replay::Playback> = offline_playback;
     let mut live: Option<Box<replay::Live>> = None;
     let mut suspended_session = None;
     let mut replay_counts = None;
@@ -991,9 +1107,28 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
             .as_ref()
             .is_some_and(|p| p.cursor == p.frames.len())
         {
+            if offline_play.is_some() {
+                break;
+            }
             restore_game!();
             continue;
         }
+        if offline_record
+            .as_ref()
+            .is_some_and(|(_, start)| *start == m.bus.frames)
+        {
+            replay_recording = Some(replay::Recording::start(
+                &m,
+                &rom,
+                &enhanced_audio,
+                &drop_policy,
+                &language,
+                render_settings,
+                preserve_cash,
+                drop_start,
+            )?);
+        }
+        let profile_start = frame_profile.as_ref().map(|_| std::time::Instant::now());
         mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
         while camera_changes
@@ -1012,6 +1147,12 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         {
             let (_, bytes) = language_changes.next().unwrap();
             localization::change_live(&mut m, &rom, &mut language, bytes.clone())?;
+            if replay_recording.is_some() {
+                replay_language_changes.push(match bytes.clone() {
+                    Some(bytes) => replay::LanguageChange::Pack(bytes),
+                    None => replay::LanguageChange::Original,
+                });
+            }
             if let Some(recording) = recording.as_mut() {
                 recording.language_change(before, bytes.as_deref())?;
             }
@@ -1399,6 +1540,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 }
             }
         }
+        let profile_native_ns = profile_start.map_or(0, |start| start.elapsed().as_nanos());
         if m.bus.frames == before {
             return Err("No frame progress".into());
         }
@@ -1464,11 +1606,15 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 ui.finish_save_exit(result);
             }
         }
+        let profile_render_start = frame_profile.as_ref().map(|_| std::time::Instant::now());
         #[cfg(feature = "desktop")]
         let preview_image = camera_preview
             .as_mut()
             .and_then(|p| p.frame_configured(&m.bus, render_settings));
+        let profile_render_ns = profile_render_start.map_or(0, |start| start.elapsed().as_nanos());
+        let profile_audio_start = frame_profile.as_ref().map(|_| std::time::Instant::now());
         let enhanced_samples = enhanced_audio.as_mut().map(|audio| audio.frame(&mut m.bus));
+        let profile_audio_ns = profile_audio_start.map_or(0, |start| start.elapsed().as_nanos());
         #[cfg(feature = "desktop")]
         if let (Some(capture), Some(image)) = (&capture, &preview_image) {
             capture.presentation(
@@ -1524,6 +1670,19 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 audio.write_all(&sample.to_le_bytes())?;
             }
         }
+        if let Some(file) = frame_profile
+            .as_mut()
+            .filter(|_| !profile_is_session || playback.is_none())
+        {
+            use std::io::Write;
+            #[cfg(feature = "desktop")]
+            let (queued, underruns) = desktop.as_mut().map_or((0, 0), |ui| ui.audio_health());
+            #[cfg(not(feature = "desktop"))]
+            let (queued, underruns) = (0, 0);
+            writeln!(file,"{},{},{profile_native_ns},{profile_render_ns},{profile_audio_ns},{},{},{},{},{},{},{queued},{underruns}",
+                m.bus.frames,profile_start.unwrap().elapsed().as_nanos(), camera_preview.as_ref().map_or(0, |p| p.accepted),
+                m.bus.audio_buf.len(),m.bus.fifo_underruns[0],m.bus.fifo_underruns[1],m.bus.fifo_refills[0],m.bus.fifo_refills[1])?;
+        }
         m.bus.audio_buf.clear();
         if replay_recording.is_some() || playback.is_some() {
             replay_packet.checksum = replay::checksum(&m);
@@ -1565,6 +1724,11 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     } else {
         Ok(())
     };
+    building_material::close_roof_trace()?;
+    if let Some(file) = frame_profile.as_mut() {
+        use std::io::Write;
+        file.flush()?;
+    }
     if let Some(audio) = audio_output.as_mut() {
         use std::io::Write;
         audio.flush()?;
@@ -1632,7 +1796,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     if let Some(policy) = drop_policy.as_ref() {
         println!(
             "drop_lifetime seconds={} held={} emergency_corpses={} expired={}",
-            drop_seconds.unwrap(),
+            drop_seconds.unwrap_or_else(|| policy.seconds()),
             policy.held,
             policy.emergency_bodies,
             policy.expired
@@ -1990,6 +2154,18 @@ mod replay_runtime_tests {
             numbers.windows(2).all(|p| p[1] == p[0] + 1),
             "diagnostic session excludes replay frames"
         );
+        let profile = fs::read_to_string(root.join("session/frame-profile.csv")).unwrap();
+        let profile_frames: Vec<u64> = profile
+            .lines()
+            .skip(1)
+            .map(|row| row.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(
+            profile_frames, numbers,
+            "frame-time diagnostics exclude playback frames too"
+        );
+        assert!(profile.lines().next().unwrap().contains("audio_underruns"));
+
         println!("Replay integration evidence: {}", root.display());
     }
 }

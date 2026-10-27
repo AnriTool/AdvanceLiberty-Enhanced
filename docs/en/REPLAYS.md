@@ -49,3 +49,21 @@ Diagnostic session recording pauses while viewing a gameplay replay and resumes
 on return; historical replay frames are excluded. Launch logs in `data/logs/`
 remain available without enabling a session. The legacy `--no-record` option
 is accepted for compatibility.
+
+## Offline replay diagnostics
+
+The low-level worker's native `multi` mode also accepts:
+
+- `--replay-record DIRECTORY START_FRAME`: capture a gameplay replay from the
+  specified absolute GBA frame until the worker's frame limit.
+- `--replay-play REPLAY_DIRECTORY`: load the snapshot and run the entire clip.
+  Use `-` for the input path and a positive placeholder frame limit (for example
+  `1`); the clip determines its actual end. Do not combine playback with `--save`,
+  `--record-session` or `--check-blocks`.
+- `--hud-scale 50|65|75|85|100`: set all HUD elements to the given percentage
+  for headless comparisons. Interactive preferences still take precedence.
+
+These options use the gameplay replay format and its compatibility/checksum
+checks. They allow `--camera-preview`, `--frame-profile` and frame captures to
+compare the same short section without replaying the entire diagnostic session.
+Offline playback does not write cartridge progress.

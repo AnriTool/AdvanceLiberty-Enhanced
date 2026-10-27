@@ -9,6 +9,42 @@ use std::{
     sync::Arc,
 };
 
+struct RoofTrace {
+    file: std::io::BufWriter<std::fs::File>,
+    start: u64,
+    end: u64,
+}
+thread_local! { static ROOF_TRACE: std::cell::RefCell<Option<RoofTrace>> = const { std::cell::RefCell::new(None) }; }
+pub fn open_roof_trace(path: &Path, start: u64, end: u64) -> std::io::Result<()> {
+    let mut file = std::io::BufWriter::new(std::fs::File::create_new(path)?);
+    writeln!(file, "frame,source,geometry_only,native_rotation,native_u,native_v,geometry_rotation,geometry_u,geometry_v,final_u,final_v,ax,ay,au,av,bx,by,bu,bv")?;
+    ROOF_TRACE.with(|t| *t.borrow_mut() = Some(RoofTrace { file, start, end }));
+    Ok(())
+}
+pub fn close_roof_trace() -> std::io::Result<()> {
+    ROOF_TRACE.with(|t| t.borrow_mut().take().map_or(Ok(()), |mut t| t.file.flush()))
+}
+fn trace_roof(
+    frame: u64,
+    source: u32,
+    geometry_only: bool,
+    native: Orientation,
+    geometry: Option<Orientation>,
+    result: Orientation,
+    a: [i32; 4],
+    b: [i32; 4],
+) -> std::io::Result<()> {
+    ROOF_TRACE.with(|t| {
+        let mut t = t.borrow_mut();
+        if let Some(t) = t.as_mut().filter(|t| (t.start..=t.end).contains(&frame)) {
+            let g = geometry.unwrap_or(Orientation { rotation: 255, ..Default::default() });
+            writeln!(t.file,"{frame},{source:08x},{geometry_only},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                native.rotation,native.mirror_u,native.mirror_v,g.rotation,g.mirror_u,g.mirror_v,
+                result.mirror_u,result.mirror_v,a[0],a[1],a[2],a[3],b[0],b[1],b[2],b[3])?;
+        }
+        Ok(())
+    })
+}
 #[derive(Clone)]
 pub struct Input {
     source: u32,
@@ -62,7 +98,7 @@ struct Face {
     input: Input,
     texture: Arc<Vec<u8>>,
 }
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
 struct Orientation {
     rotation: u8,
     mirror_u: bool,
@@ -160,10 +196,17 @@ fn stable_roof_orientation(
     // GBA rounds clipped diagonal endpoints to the same column/row. Its
     // strict comparisons then lose the flip, although a wide view still sees
     // the rest of the roof. Use the non-degenerate source basis on that axis.
-    if a[0] == b[0] {
+    let rotation = Orientation {
+        rotation: native.rotation,
+        ..Default::default()
+    };
+    let uv = |p: [i32; 4]| rotation.apply([p[2].clamp(0, 128) as f64, p[3].clamp(0, 128) as f64]);
+    let (start, end) = (uv(a), uv(b));
+    // Quantized UVs can collapse even when the screen endpoints differ.
+    if a[0] == b[0] || start[0] == end[0] {
         result.mirror_u = geometry.mirror_u;
     }
-    if a[1] == b[1] {
+    if a[1] == b[1] || start[1] == end[1] {
         result.mirror_v = geometry.mirror_v;
     }
     result
@@ -180,7 +223,8 @@ fn merge_texture<K: Eq + std::hash::Hash>(
         std::collections::hash_map::Entry::Occupied(mut entry) => {
             let conflict = match (entry.get(), texture) {
                 (Some(old), Some(new)) => {
-                    (1..127).any(|v| (1..127).any(|u| old[v * 128 + u] != new[v * 128 + u]))
+                    !Arc::ptr_eq(old, new)
+                        && (1..127).any(|v| (1..127).any(|u| old[v * 128 + u] != new[v * 128 + u]))
                 }
                 (_, None) => true,
                 _ => false,
@@ -207,6 +251,83 @@ fn remember_texture<K: Copy + Eq + std::hash::Hash>(
         order.push_back(key);
     }
     merge_texture(bank, key, texture);
+}
+fn atlas(
+    m: &Machine,
+    cache: &mut HashMap<(u32, usize), Arc<Vec<u8>>>,
+    address: u32,
+    size: usize,
+) -> Result<Arc<Vec<u8>>, String> {
+    if address >> 24 == 8 {
+        if let Some(data) = cache.get(&(address, size)) {
+            return Ok(data.clone());
+        }
+        let data = Arc::new(bytes(m, address, size)?.to_vec());
+        cache.insert((address, size), data.clone());
+        Ok(data)
+    } else {
+        Ok(Arc::new(bytes(m, address, size)?.to_vec()))
+    }
+}
+fn canonical_atlas(
+    cache: &mut HashMap<(u32, Orientation), Arc<Vec<u8>>>,
+    address: u32,
+    transform: Orientation,
+    texture: &Arc<Vec<u8>>,
+) -> Arc<Vec<u8>> {
+    if address >> 24 == 8 {
+        if let Some(data) = cache.get(&(address, transform)) {
+            return data.clone();
+        }
+    }
+    let canonical: Arc<Vec<u8>> = Arc::new(
+        (0..128 * 128)
+            .map(|i| {
+                let uv = transform.apply([(i % 128) as f64, (i / 128) as f64]);
+                texture[uv[1].floor().clamp(0.0, 127.0) as usize * 128
+                    + uv[0].floor().clamp(0.0, 127.0) as usize]
+            })
+            .collect(),
+    );
+    if address >> 24 == 8 {
+        cache.insert((address, transform), canonical.clone());
+    }
+    canonical
+}
+/// One immutable indexed building layer. Palette and sprite animation remain live.
+#[derive(Default)]
+pub struct LayerCache {
+    last: Option<(
+        (
+            u64,
+            [i32; 3],
+            usize,
+            usize,
+            usize,
+            crate::render_settings::TextureMapping,
+        ),
+        Arc<Vec<u8>>,
+    )>,
+}
+impl LayerCache {
+    pub fn render(
+        &mut self,
+        capture: &Capture,
+        scene: u64,
+        delta: [i32; 3],
+        view: crate::viewport::View,
+        mapping: crate::render_settings::TextureMapping,
+    ) -> Result<Arc<Vec<u8>>, String> {
+        let key = (scene, delta, view.width, view.height, view.scale, mapping);
+        if let Some((old, layer)) = &self.last {
+            if *old == key {
+                return Ok(layer.clone());
+            }
+        }
+        let layer = Arc::new(capture.live_layer_view(delta, view, mapping)?);
+        self.last = Some((key, layer.clone()));
+        Ok(layer)
+    }
 }
 type MaterialKey = (u32, u32, bool, bool);
 #[derive(Default)]
@@ -278,6 +399,8 @@ impl MaterialBank {
 }
 #[derive(Clone, Default)]
 pub struct Capture {
+    atlases: HashMap<(u32, usize), Arc<Vec<u8>>>,
+    canonical_atlases: HashMap<(u32, Orientation), Arc<Vec<u8>>>,
     faces: Vec<Face>,
     group_start: usize,
     descriptor: u32,
@@ -596,12 +719,11 @@ impl Capture {
             self.descriptor = m.cpu.regs[0];
             self.orientation = m.cpu.regs[2] & 1 != 0;
             self.special = m.cpu.regs[3] & 1 != 0;
-            let texture = Arc::new(if m.cpu.regs[1] == 0 {
-                Vec::new()
+            let texture = if m.cpu.regs[1] == 0 {
+                Arc::new(Vec::new())
             } else {
-                bytes(m, m.cpu.regs[1], 4096)?.to_vec()
-            });
-            let mut atlases: HashMap<u32, Arc<Vec<u8>>> = HashMap::new();
+                atlas(m, &mut self.atlases, m.cpu.regs[1], 4096)?
+            };
             for i in self.group_start..self.faces.len() {
                 if !self.wide {
                     break;
@@ -625,13 +747,7 @@ impl Capture {
                             let pointer =
                                 word(m, self.descriptor + if alternate { 4 } else { 0 })? as u32;
                             if pointer >> 24 == 8 {
-                                let atlas = if let Some(atlas) = atlases.get(&pointer) {
-                                    atlas.clone()
-                                } else {
-                                    let atlas = Arc::new(bytes(m, pointer, 128 * 128)?.to_vec());
-                                    atlases.insert(pointer, atlas.clone());
-                                    atlas
-                                };
+                                let atlas = atlas(m, &mut self.atlases, pointer, 128 * 128)?;
                                 self.offscreen_special.insert(i, (atlas, transform));
                             }
                         }
@@ -738,23 +854,28 @@ impl Capture {
             }
             let guest_transform = transform;
             if self.special {
-                transform = stable_roof_orientation(
+                let geometry = special_orientation(&face.vertices, self.orientation);
+                transform = stable_roof_orientation(transform, geometry, a, b);
+                trace_roof(
+                    m.bus.frames,
+                    face.input.source,
+                    self.geometry_only,
+                    guest_transform,
+                    geometry,
                     transform,
-                    special_orientation(&face.vertices, self.orientation),
                     a,
                     b,
-                );
+                )
+                .map_err(|e| e.to_string())?;
             }
-            face.texture = Arc::new(bytes(m, full, 128 * 128)?.to_vec());
+            face.texture = atlas(m, &mut self.atlases, full, 128 * 128)?;
             if let Some(&key) = self.material_keys.get(&index) {
-                let canonical: Vec<_> = (0..128 * 128)
-                    .map(|i| {
-                        let uv = transform.apply([(i % 128) as f64, (i / 128) as f64]);
-                        face.texture[uv[1].floor().clamp(0.0, 127.0) as usize * 128
-                            + uv[0].floor().clamp(0.0, 127.0) as usize]
-                    })
-                    .collect();
-                let canonical = Some(Arc::new(canonical));
+                let canonical = Some(canonical_atlas(
+                    &mut self.canonical_atlases,
+                    full,
+                    transform,
+                    &face.texture,
+                ));
                 merge_texture(&mut self.canonical, key, &canonical);
                 merge_texture(
                     &mut self.face_canonical,
@@ -1137,6 +1258,121 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clipped_roof_keeps_flip_when_uv_quantizes_before_screen_position() {
+        let native = Orientation {
+            rotation: 0,
+            mirror_u: false,
+            mirror_v: true,
+        };
+        let geometry = Orientation {
+            rotation: 0,
+            mirror_u: true,
+            mirror_v: true,
+        };
+        // Captured at frame 19202, source 08da934c: two screen columns, one texel.
+        let fixed = stable_roof_orientation(native, Some(geometry), [3, 2, 0, 118], [2, 108, 0, 0]);
+        assert!(fixed.mirror_u && fixed.mirror_v);
+        let rotated = Orientation {
+            rotation: 1,
+            mirror_u: false,
+            mirror_v: false,
+        };
+        let geometry = Orientation {
+            rotation: 1,
+            mirror_u: true,
+            mirror_v: true,
+        };
+        let fixed =
+            stable_roof_orientation(rotated, Some(geometry), [10, 20, 0, -1], [11, 21, 1, 0]);
+        assert!(fixed.mirror_u); // Rotation maps the clamped V coordinate to U.
+        assert!(!fixed.mirror_v); // Non-degenerate axis retains the verified guest sign.
+    }
+    #[test]
+    fn atlas_sharing_keeps_ram_live_and_orientation_variants_independent() {
+        let mut m = Machine::new(vec![7; 128 * 128]);
+        let mut cache = HashMap::new();
+        let a = atlas(&m, &mut cache, 0x08000000, 128 * 128).unwrap();
+        let b = atlas(&m, &mut cache, 0x08000000, 128 * 128).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        let ram = atlas(&m, &mut cache, 0x02000100, 4096).unwrap();
+        m.bus.ewram[0x100] = 3;
+        let changed = atlas(&m, &mut cache, 0x02000100, 4096).unwrap();
+        assert_eq!(ram[0], 0);
+        assert_eq!(changed[0], 3);
+        let texture = Arc::new((0..128 * 128).map(|i| (i % 251) as u8).collect());
+        let mut transformed = HashMap::new();
+        let first = canonical_atlas(
+            &mut transformed,
+            0x08000000,
+            Orientation::default(),
+            &texture,
+        );
+        let second = canonical_atlas(
+            &mut transformed,
+            0x08000000,
+            Orientation::default(),
+            &texture,
+        );
+        assert!(Arc::ptr_eq(&first, &second));
+        let flipped = canonical_atlas(
+            &mut transformed,
+            0x08000000,
+            Orientation {
+                mirror_u: true,
+                ..Default::default()
+            },
+            &texture,
+        );
+        assert_ne!(first, flipped);
+    }
+    #[test]
+    fn indexed_layer_cache_tracks_scene_camera_view_and_mapping() {
+        let mut capture = Capture::default();
+        capture.push(
+            vec![
+                [-50., 50., 100.],
+                [50., 50., 100.],
+                [50., -50., 100.],
+                [-50., -50., 100.],
+            ],
+            Input {
+                source: 0x08000000,
+                color: 7,
+                size: 128,
+                uv: Vec::new(),
+            },
+        );
+        let mut cache = LayerCache::default();
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        let mapping = crate::render_settings::TextureMapping::Perspective;
+        let first = cache.render(&capture, 1, [0; 3], view, mapping).unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &cache.render(&capture, 1, [0; 3], view, mapping).unwrap()
+        ));
+        for (scene, delta, view, mapping) in [
+            (2, [0; 3], view, mapping),
+            (2, [65536, 0, 0], view, mapping),
+            (
+                2,
+                [65536, 0, 0],
+                crate::viewport::View::new(3, crate::viewport::Aspect::Original),
+                mapping,
+            ),
+            (
+                2,
+                [65536, 0, 0],
+                view,
+                crate::render_settings::TextureMapping::Affine,
+            ),
+        ] {
+            let expected = capture.live_layer_view(delta, view, mapping).unwrap();
+            let actual = cache.render(&capture, scene, delta, view, mapping).unwrap();
+            assert_eq!(*actual, expected);
+            assert!(!Arc::ptr_eq(&first, &actual));
+        }
+    }
     #[test]
     fn clipped_roof_keeps_orientation_when_guest_diagonal_collapses_to_one_column() {
         let native = Orientation {

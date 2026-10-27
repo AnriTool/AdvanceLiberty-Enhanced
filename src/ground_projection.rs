@@ -349,12 +349,24 @@ pub fn continuous_layer_view(
 ) -> Vec<Option<u16>> {
     continuous_layer_world(source, view, delta, zoom, None)
 }
+#[cfg(test)]
 pub fn continuous_layer_world(
     source: &MemMap,
     view: crate::viewport::View,
     delta: [i32; 2],
     zoom: f64,
     world: Option<&WorldGround>,
+) -> Vec<Option<u16>> {
+    continuous_layer_rows_world(source, view, delta, zoom, world, 0, view.height)
+}
+pub fn continuous_layer_rows_world(
+    source: &MemMap,
+    view: crate::viewport::View,
+    delta: [i32; 2],
+    zoom: f64,
+    world: Option<&WorldGround>,
+    first: usize,
+    last: usize,
 ) -> Vec<Option<u16>> {
     let scale = view.scale;
     let [rx, ry, pa, pd] = continuous_parameters(source);
@@ -371,9 +383,9 @@ pub fn continuous_layer_world(
             ((rx + dx + pa * sx) / 256.0).floor() as i32
         })
         .collect();
-    let mut layer = vec![None; width * 160 * scale];
+    let mut layer = vec![None; width * (last - first)];
     let mut previous_y = None;
-    for y in 0..160 * scale {
+    for y in first..last {
         let sy = y as f64 / scale as f64;
         let sy = if zoom == 1.0 {
             sy
@@ -382,7 +394,8 @@ pub fn continuous_layer_world(
         };
         let ty = ((ry + dy + pd * sy) / 256.0).floor() as i32;
         if previous_y == Some(ty) {
-            layer.copy_within((y - 1) * width..y * width, y * width);
+            let row = y - first;
+            layer.copy_within((row - 1) * width..row * width, row * width);
         } else {
             let mut previous_x = None;
             let mut pixel = None;
@@ -398,7 +411,7 @@ pub fn continuous_layer_world(
                     };
                     previous_x = Some(tx);
                 }
-                layer[y * width + x] = pixel;
+                layer[(y - first) * width + x] = pixel;
             }
         }
         previous_y = Some(ty);
@@ -572,8 +585,9 @@ mod tests {
     #[test]
     #[ignore = "requires USA ROM and captured three-island session"]
     fn island_ground_matches_resident_cache_in_all_three_regions() {
-        let directory = std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_ISLAND_TEST_DIR").unwrap())
-            .join("capture");
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("ADVANCE_LIBERTY_ISLAND_TEST_DIR").unwrap())
+                .join("capture");
         let rom = std::sync::Arc::new(std::fs::read("roms/usa.gba").unwrap());
         let mut regions = std::collections::BTreeSet::new();
         let mut checked = 0;

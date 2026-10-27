@@ -996,6 +996,9 @@ impl Desktop {
         Ok(())
     }
 
+    pub fn audio_health(&mut self) -> (u32, u64) {
+        self.audio.as_mut().map_or((0, 0), |audio| audio.health())
+    }
     pub fn set_preview_status(&mut self, status: &'static str) {
         self.preview_status = status;
     }
