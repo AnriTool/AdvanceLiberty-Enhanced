@@ -649,11 +649,36 @@ impl Capture {
         view: crate::viewport::View,
         mapping: crate::render_settings::TextureMapping,
     ) -> Result<Vec<u8>, String> {
-        let scale = view.scale;
-        // A model fully culled by the guest can omit its draw-batch call.
-        // Only a visible textured face needs a captured texture here. Flat
-        // faces use the scene palette supplied by the live compositor.
         let mut layer = vec![0; view.width * view.height];
+        static MULTICORE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if layer.len() >= 720 * 480
+            && *MULTICORE
+                .get_or_init(|| std::thread::available_parallelism().is_ok_and(|n| n.get() >= 2))
+        {
+            let middle = view.height / 2;
+            let (top, bottom) = layer.split_at_mut(middle * view.width);
+            std::thread::scope(|scope| {
+                let upper =
+                    scope.spawn(|| self.live_layer_rows(delta, view, mapping, 0, middle, top));
+                let lower = self.live_layer_rows(delta, view, mapping, middle, view.height, bottom);
+                upper.join().expect("building compositor worker panicked")?;
+                lower
+            })?;
+        } else {
+            self.live_layer_rows(delta, view, mapping, 0, view.height, &mut layer)?;
+        }
+        Ok(layer)
+    }
+    fn live_layer_rows(
+        &self,
+        delta: [i32; 3],
+        view: crate::viewport::View,
+        mapping: crate::render_settings::TextureMapping,
+        first: usize,
+        last: usize,
+        layer: &mut [u8],
+    ) -> Result<(), String> {
+        let scale = view.scale;
         for (face_index, face) in self.faces.iter().enumerate() {
             let mut vertices = face.vertices.clone();
             for v in &mut vertices {
@@ -685,19 +710,32 @@ impl Capture {
             for i in 1..v.len() - 1 {
                 let triangle_vertices = [v[0], v[i], v[i + 1]];
                 if mapping == crate::render_settings::TextureMapping::Perspective {
-                    triangle_perspective(
-                        &mut layer,
+                    triangle_perspective_rows(
+                        layer,
                         scale,
                         triangle_vertices,
                         [vertices[0][2], vertices[i][2], vertices[i + 1][2]],
                         face,
+                        view.width,
+                        first,
+                        last,
                     );
                 } else {
-                    triangle(&mut layer, scale, triangle_vertices, face);
+                    raster_triangle_rows::<false>(
+                        layer,
+                        scale,
+                        triangle_vertices,
+                        [1.0; 3],
+                        face,
+                        true,
+                        view.width,
+                        first,
+                        last,
+                    );
                 }
             }
         }
-        Ok(layer)
+        Ok(())
     }
     pub fn push(&mut self, vertices: Vec<[f64; 3]>, input: Input) {
         let vertices = vertices
@@ -1153,6 +1191,7 @@ fn triangle(image: &mut [u8], scale: usize, v: [[f64; 4]; 3], face: &Face) {
 fn raster_triangle(image: &mut [u8], scale: usize, v: [[f64; 4]; 3], face: &Face, spans: bool) {
     raster_triangle_impl::<false>(image, scale, v, [1.0; 3], face, spans);
 }
+#[cfg(test)]
 fn triangle_perspective(
     image: &mut [u8],
     scale: usize,
@@ -1166,6 +1205,22 @@ fn triangle_perspective(
         raster_triangle_impl::<true>(image, scale, v, depth, face, true);
     }
 }
+fn triangle_perspective_rows(
+    image: &mut [u8],
+    scale: usize,
+    v: [[f64; 4]; 3],
+    depth: [f64; 3],
+    face: &Face,
+    width: usize,
+    first: usize,
+    last: usize,
+) {
+    if depth[0] == depth[1] && depth[1] == depth[2] {
+        raster_triangle_rows::<false>(image, scale, v, [1.0; 3], face, true, width, first, last);
+    } else {
+        raster_triangle_rows::<true>(image, scale, v, depth, face, true, width, first, last);
+    }
+}
 fn raster_triangle_impl<const PERSPECTIVE: bool>(
     image: &mut [u8],
     scale: usize,
@@ -1174,8 +1229,21 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
     face: &Face,
     spans: bool,
 ) {
-    let inverse_depth = depth.map(|z| 1.0 / z);
     let width = image.len() / (160 * scale);
+    raster_triangle_rows::<PERSPECTIVE>(image, scale, v, depth, face, spans, width, 0, 160 * scale);
+}
+fn raster_triangle_rows<const PERSPECTIVE: bool>(
+    image: &mut [u8],
+    scale: usize,
+    v: [[f64; 4]; 3],
+    depth: [f64; 3],
+    face: &Face,
+    spans: bool,
+    width: usize,
+    first: usize,
+    last: usize,
+) {
+    let inverse_depth = depth.map(|z| 1.0 / z);
     let height = 160 * scale;
     let edge = |a: [f64; 4], b: [f64; 4], p: [f64; 2]| {
         (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
@@ -1194,7 +1262,7 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
             .ceil()
             .clamp(0.0, limit as f64) as usize
     };
-    for y in lo(1)..hi(1, height) {
+    for y in lo(1).max(first)..hi(1, height).min(last) {
         let (mut start, mut end) = (lo(0), hi(0, width));
         if spans {
             // Intersect this scanline with all three half planes. Keep a
@@ -1251,13 +1319,56 @@ fn raster_triangle_impl<const PERSPECTIVE: bool>(
                 });
                 face.texture[uv[1] * face.input.size + uv[0]]
             };
-            image[y * width + x] = index;
+            image[(y - first) * width + x] = index;
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn row_tiles_preserve_painter_order_and_perspective_sampling() {
+        let mut capture = Capture::default();
+        for z in [150.0, 90.0] {
+            capture.push(
+                vec![
+                    [-140., 65., z],
+                    [140., 65., z + 30.],
+                    [110., -70., z + 30.],
+                    [-110., -70., z],
+                ],
+                Input {
+                    source: 0,
+                    color: 3,
+                    size: 8,
+                    uv: vec![[0., 0.], [7., 0.], [7., 7.], [0., 7.]],
+                },
+            );
+            capture.faces.last_mut().unwrap().texture =
+                Arc::new((0..64).map(|v| (v % 13) as u8).collect());
+        }
+        for aspect in [
+            crate::viewport::Aspect::Original,
+            crate::viewport::Aspect::Wide,
+        ] {
+            let view = crate::viewport::View::new(3, aspect);
+            for mapping in [
+                crate::render_settings::TextureMapping::Affine,
+                crate::render_settings::TextureMapping::Perspective,
+            ] {
+                for delta in [[0, 0, 0], [12000, -14000, 5000]] {
+                    let mut scalar = vec![0; view.width * view.height];
+                    capture
+                        .live_layer_rows(delta, view, mapping, 0, view.height, &mut scalar)
+                        .unwrap();
+                    assert_eq!(
+                        capture.live_layer_view(delta, view, mapping).unwrap(),
+                        scalar
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn clipped_roof_keeps_flip_when_uv_quantizes_before_screen_position() {
         let native = Orientation {

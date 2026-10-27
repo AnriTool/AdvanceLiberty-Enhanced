@@ -891,7 +891,7 @@ pub fn open_trace(path: &Path, rom: &[u8]) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 pub extern "C" fn read32(m: *mut c_void, address: u32) -> u32 {
-    let value = crate::mouse_aim::read32(m, address);
+    let value = crate::polyphonic_audio::read32(m, address);
     if (8..=13).contains(&(address >> 24)) {
         let normalized = 0x08000000 | (address & 0x1ffffff);
         TRACE.with(|cell| {

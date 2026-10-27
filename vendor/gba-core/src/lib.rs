@@ -23,6 +23,7 @@ pub mod machine;
 pub mod mem;
 pub mod mp2k;
 pub mod ppu;
+pub mod pcm_overlay;
 pub mod rdrv;
 pub mod rtc;
 pub mod shadow;

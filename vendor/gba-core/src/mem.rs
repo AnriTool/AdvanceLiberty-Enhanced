@@ -212,6 +212,8 @@ pub struct MemMap {
     pub tap_channels: bool,
     pub fifo_tap: [Vec<(i8, u32)>; 2],
     pub psg_tap: Vec<i16>,
+    #[serde(default)]
+    pub pcm_overlay: Option<crate::pcm_overlay::PcmOverlay>,
     /// MP2K HLE shadow mixer (Stage 3): present when the stock driver
     /// was detected and the enhanced path is on. The dispatch loops
     /// call `mp2k_frame_hook` when PC lands on `SoundMainRAM`.
@@ -269,6 +271,7 @@ impl MemMap {
             || self.flash.as_ref().is_some_and(|f| !f.valid_snapshot())
             || self.eeprom.as_ref().is_some_and(|e| !e.valid_snapshot())
             || !self.apu.valid_snapshot()
+            || self.pcm_overlay.as_ref().is_some_and(|o| !o.valid_snapshot([self.fifo[0].len(), self.fifo[1].len()]))
         {
             return Err("Invalid replay machine state");
         }
@@ -322,6 +325,7 @@ impl MemMap {
             tap_channels: self.tap_channels.clone(),
             fifo_tap: self.fifo_tap.clone(),
             psg_tap: self.psg_tap.clone(),
+            pcm_overlay: self.pcm_overlay.clone(),
             mp2k: None,
             gax: None,
             rdrv: None,
@@ -398,6 +402,7 @@ impl MemMap {
             tap_channels: false,
             fifo_tap: [Vec::new(), Vec::new()],
             psg_tap: Vec::new(),
+            pcm_overlay: None,
             mp2k: None,
             gax: None,
             rdrv: None,
@@ -846,7 +851,11 @@ impl MemMap {
     /// the hardware DAC, so the tap stays a uniform stream).
     fn drain_fifo(&mut self, f: usize, times: u64, period: u32) {
         for _ in 0..times {
-            match self.fifo[f].pop_front() {
+            let popped = self.fifo[f].pop_front();
+            if let Some(overlay) = self.pcm_overlay.as_mut() {
+                overlay.drain(f, popped.is_some(), self.tap_channels, period);
+            }
+            match popped {
                 Some(s) => self.fifo_sample[f] = s,
                 None => {
                     self.fifo_underruns[f] += 1;
@@ -897,6 +906,9 @@ impl MemMap {
     /// incoming byte.
     fn fifo_push(&mut self, f: usize, value: u8) {
         self.fifo_pushes[f] += 1;
+        if let Some(overlay) = self.pcm_overlay.as_mut() {
+            overlay.push(f, self.fifo[f].len() < 32);
+        }
         if self.fifo[f].len() < 32 {
             self.fifo[f].push_back(value as i8);
         }
@@ -939,7 +951,9 @@ impl MemMap {
         for _ in 0..count {
             if word {
                 let v = self.read32(src);
+                if let Some(overlay) = self.pcm_overlay.as_mut() { overlay.dma(sound_mode.then_some(src)); }
                 self.write32(dst, v);
+                if let Some(overlay) = self.pcm_overlay.as_mut() { overlay.dma(None); }
             } else {
                 let v = self.read16(src);
                 self.write16(dst, v);
@@ -1107,9 +1121,11 @@ impl MemMap {
                 self.io[off as usize] = value;
                 if value & 0x08 != 0 {
                     self.fifo[0].clear();
+                    if let Some(overlay) = self.pcm_overlay.as_mut() { overlay.reset(0); }
                 }
                 if value & 0x80 != 0 {
                     self.fifo[1].clear();
+                    if let Some(overlay) = self.pcm_overlay.as_mut() { overlay.reset(1); }
                 }
             }
             // KEYCNT: re-evaluate the keypad IRQ condition.
@@ -1703,6 +1719,35 @@ mod tests {
         assert_eq!(samples, vec![0x10, 0x20, 0x30, 0x40, 0x40, 0x40]);
         // PSG-only tap fills on the sample grid alongside.
         assert_eq!(mem.psg_tap.len(), mem.audio_buf.len());
+    }
+
+    #[test]
+    fn pcm_overlay_follows_real_dma_bytes_without_changing_hardware_output() {
+        let mut original=MemMap::new(vec![]);
+        let mut enhanced=MemMap::new(vec![]);
+        enhanced.pcm_overlay=Some(Default::default());
+        for mem in [&mut original,&mut enhanced] {
+            mem.tap_channels=true;
+            mem.write16(0x04000082,0x0300); // FIFO A to both speakers
+            mem.write16(0x04000084,0x80);
+            for i in 0..64 { mem.write8(0x03006700+i,i as u8); }
+            mem.write32(0x040000bc,0x03006700); // DMA1 source
+            mem.write32(0x040000c0,0x040000a0); // FIFO A
+            mem.write16(0x040000c6,0xb640); // sound DMA/repeat/fixed destination
+            mem.write16(0x04000100,0xff00);
+            mem.write16(0x04000102,0x80);
+        }
+        let overlay=enhanced.pcm_overlay.as_mut().unwrap();
+        for i in 0..64 { overlay.memory.insert(0x03006700+i,100.0+i as f32); }
+        original.tick(256*20+8);
+        enhanced.tick(256*20+8);
+        assert_eq!(enhanced.audio_buf,original.audio_buf);
+        assert_eq!(enhanced.fifo_tap,original.fifo_tap);
+        let shadow=&enhanced.pcm_overlay.as_ref().unwrap().tap[0];
+        // The first timer event precedes the first refill and holds zero;
+        // subsequent samples carry the actual DMA source's sidecar values.
+        assert_eq!(shadow.iter().map(|(v,_)| *v).collect::<Vec<_>>(),
+            std::iter::once(0.0).chain((0..19).map(|i|100.0+i as f32)).collect::<Vec<_>>());
     }
 
     #[test]

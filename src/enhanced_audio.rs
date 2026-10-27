@@ -13,6 +13,13 @@ pub struct Output {
     psg_samples: VecDeque<f32>,
     dc: [DcBlock; 2],
     samples: Vec<i16>,
+    #[serde(default)]
+    overlay: Option<Overlay>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Overlay {
+    fifo: [FifoInterp; 2],
+    events: [VecDeque<(f32, u32)>; 2],
 }
 impl Output {
     pub fn valid_snapshot(&self) -> bool {
@@ -20,6 +27,12 @@ impl Output {
             && self.psg.frac >= 0.0
             && self.psg.frac < 1.0
             && self.psg.ratio == 1.0
+            && self.overlay.as_ref().is_none_or(|o| {
+                o.fifo.iter().all(|f| f.valid_snapshot())
+                    && o.events
+                        .iter()
+                        .all(|q| q.len() <= 4096 && q.iter().all(|(v, p)| v.is_finite() && *p > 0))
+            })
             && self.fifo.iter().all(|f| {
                 f.table.len() == (SINC_PHASES + 1) * SINC_TAPS
                     && f.fut.len() == SINC_TAPS * 2
@@ -37,9 +50,19 @@ impl Output {
             psg_samples: VecDeque::new(),
             dc: std::array::from_fn(|_| DcBlock::new(65536.0)),
             samples: Vec::new(),
+            overlay: None,
         }
     }
     pub fn frame(&mut self, bus: &mut gba_core::MemMap) -> &[i16] {
+        if let Some(source) = bus.pcm_overlay.as_mut() {
+            let overlay = self.overlay.get_or_insert_with(|| Overlay {
+                fifo: std::array::from_fn(|_| FifoInterp::new(65536.0)),
+                events: Default::default(),
+            });
+            for (queue, tap) in overlay.events.iter_mut().zip(&mut source.tap) {
+                queue.extend(tap.drain(..));
+            }
+        }
         for (queue, tap) in self.events.iter_mut().zip(bus.fifo_tap.iter_mut()) {
             queue.extend(tap.drain(..));
         }
@@ -50,7 +73,14 @@ impl Output {
         for _ in 0..bus.audio_buf.len() / 2 {
             let (mut l, mut r) = self.psg.next(&mut self.psg_samples);
             for f in 0..2 {
-                let value = self.fifo[f].next(&mut self.events[f])
+                let extra = self.overlay.as_mut().map_or(0.0, |overlay| {
+                    overlay.fifo[f].next_level(|| {
+                        overlay.events[f]
+                            .pop_front()
+                            .map(|(v, p)| (v * (64.0 / 32768.0), p))
+                    })
+                });
+                let value = (self.fifo[f].next(&mut self.events[f]) + extra)
                     * if cnt & (4 << f) == 0 { 0.5 } else { 1.0 };
                 let route = (cnt >> (8 + 4 * f)) & 3;
                 if route & 2 != 0 {
@@ -72,6 +102,13 @@ impl Output {
         for queue in &mut self.events {
             while queue.len() > 4096 {
                 queue.pop_front();
+            }
+        }
+        if let Some(overlay) = self.overlay.as_mut() {
+            for queue in &mut overlay.events {
+                while queue.len() > 4096 {
+                    queue.pop_front();
+                }
             }
         }
         &self.samples
@@ -246,6 +283,18 @@ struct FifoInterp {
 }
 
 impl FifoInterp {
+    fn valid_snapshot(&self) -> bool {
+        self.table.len() == (SINC_PHASES + 1) * SINC_TAPS
+            && self.table.iter().all(|v| v.is_finite())
+            && self.fut.len() == SINC_TAPS * 2
+            && self.fut.iter().all(|v| v.is_finite())
+            && self.pos < SINC_TAPS * 2
+            && self.y.is_finite()
+            && self.level.is_finite()
+            && self.t_next.is_finite()
+            && self.out_step == 256.0
+            && self.period >= 1.0
+    }
     fn new(out_hz: f64) -> FifoInterp {
         FifoInterp {
             table: build_sinc_table(0.45),
@@ -260,6 +309,9 @@ impl FifoInterp {
     }
 
     fn next(&mut self, q: &mut std::collections::VecDeque<(i8, u32)>) -> f32 {
+        self.next_level(|| q.pop_front().map(|(s, p)| (s as f32 * (64.0 / 32768.0), p)))
+    }
+    fn next_level(&mut self, mut event: impl FnMut() -> Option<(f32, u32)>) -> f32 {
         // Producer runs on emulated time, independent of device buffering.
 
         let stepc = self.out_step;
@@ -269,10 +321,10 @@ impl FifoInterp {
             // The event fires inside this output sample, at fraction phi
             // of the sample period.
             let phi = (1.0 + self.t_next / stepc).clamp(0.0, 1.0);
-            let new_level = match q.pop_front() {
+            let new_level = match event() {
                 Some((s, p)) => {
                     self.period = (p as f64).max(1.0);
-                    s as f32 * (64.0 / 32768.0)
+                    s
                 }
                 None => self.level, // DAC holds on underrun
             };
@@ -298,6 +350,31 @@ impl FifoInterp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn silent_overlay_is_bit_identical_and_snapshot_continues_its_filter() {
+        let mut normal = Output::new();
+        let mut overlay = Output::new();
+        for frame in 0..3 {
+            let mut a = gba_core::MemMap::new(vec![]);
+            a.io[0x84] = 0x80;
+            a.io[0x83] = 3;
+            a.audio_buf = vec![0; 2200];
+            a.psg_tap = vec![0; 2200];
+            a.fifo_tap[0] = (0..160)
+                .map(|i| (((i + frame) % 100) as i8, 1755))
+                .collect();
+            let mut b = gba_core::MemMap::new(vec![]);
+            b.io = a.io.clone();
+            b.audio_buf = a.audio_buf.clone();
+            b.psg_tap = a.psg_tap.clone();
+            b.fifo_tap = a.fifo_tap.clone();
+            b.pcm_overlay = Some(Default::default());
+            b.pcm_overlay.as_mut().unwrap().tap[0] = vec![(0.0, 1755); 160];
+            assert_eq!(normal.frame(&mut a), overlay.frame(&mut b));
+            overlay = serde_json::from_slice(&serde_json::to_vec(&overlay).unwrap()).unwrap();
+            assert!(overlay.valid_snapshot());
+        }
+    }
     #[test]
     fn band_limit_preserves_low_tones_and_rejects_alias_band() {
         let amplitude = |hz: f64| {

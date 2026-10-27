@@ -29,7 +29,9 @@ mod coverage;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod drop_lifetime;
+mod audio_probe;
 mod enhanced_audio;
+mod polyphonic_audio;
 mod frame_capture;
 #[cfg(feature = "desktop")]
 mod game_menu;
@@ -220,6 +222,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     run_with_args(std::env::args().skip(1).collect())
 }
 fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let polyphonic = if let Some(index) = args.iter().position(|s| s == "--polyphonic-audio") {
+        args.remove(index);
+        true
+    } else {
+        false
+    };
     let enhanced_sound = if let Some(index) = args.iter().position(|s| s == "--enhanced-audio") {
         args.remove(index);
         true
@@ -546,6 +554,16 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         building_material::open_roof_trace(std::path::Path::new(&args[index + 1]), start, end)?;
         args.drain(index..=index + 3);
     }
+    let sound_probe = if let Some(index) = args.iter().position(|s| s == "--sound-probe") {
+        let path = args
+            .get(index + 1)
+            .ok_or("--sound-probe requires NEW_DIRECTORY")?
+            .clone();
+        args.drain(index..=index + 1);
+        Some(std::path::PathBuf::from(path))
+    } else {
+        None
+    };
     let mut audio_output = if let Some(index) = args.iter().position(|s| s == "--audio-out") {
         if index + 1 >= args.len() {
             return Err("--audio-out requires a new PCM file path".into());
@@ -886,6 +904,13 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     let mut m = Machine::new(rom.clone());
     m.bus.tap_channels = enhanced_sound;
     let mut enhanced_audio = enhanced_sound.then(enhanced_audio::Output::new);
+    if polyphonic {
+        if !enhanced_sound {
+            return Err("Polyphonic audio requires --enhanced-audio".into());
+        }
+        m.bus.pcm_overlay = Some(Default::default());
+        eprintln!("Audio: experimental simultaneous PCM effects enabled");
+    }
     if enhanced_sound {
         eprintln!(
             "Audio: Enhanced Output (per-channel sinc / DC blocker / soft clip), engine: {}",
@@ -971,6 +996,9 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 .append(true)
                 .open(recording.directory().join("info.txt"))?;
             writeln!(info, "audio_output=EnhancedOutput")?;
+            if m.bus.pcm_overlay.is_some() {
+                writeln!(info, "polyphonic_audio=1")?;
+            }
         }
     }
     if preserve_cash {
@@ -1026,7 +1054,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         guard,
         interp_one: interp,
         read16: mouse_aim::read16,
-        read32: mouse_aim::read32,
+        read32: polyphonic_audio::read32,
         ..RT_API
     };
     let camera_enabled = camera_options.is_some();
@@ -1038,6 +1066,15 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         api.write8 = camera_trace::write8;
         api.write16 = camera_trace::write16;
         api.write32 = camera_trace::write32;
+    }
+    if let Some(path) = &sound_probe {
+        if camera_enabled || mode != "multi" || force_interpreter {
+            return Err("Sound probe requires native multi mode without camera write tracing".into());
+        }
+        audio_probe::open(path)?;
+        api.write8 = audio_probe::write8;
+        api.write16 = audio_probe::write16;
+        api.write32 = audio_probe::write32;
     }
     let native_api = native_host::Api::new(api);
     let api = &native_api.base;
@@ -1683,6 +1720,9 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 m.bus.frames,profile_start.unwrap().elapsed().as_nanos(), camera_preview.as_ref().map_or(0, |p| p.accepted),
                 m.bus.audio_buf.len(),m.bus.fifo_underruns[0],m.bus.fifo_underruns[1],m.bus.fifo_refills[0],m.bus.fifo_refills[1])?;
         }
+        if sound_probe.is_some() {
+            audio_probe::frame(&m)?;
+        }
         m.bus.audio_buf.clear();
         if replay_recording.is_some() || playback.is_some() {
             replay_packet.checksum = replay::checksum(&m);
@@ -1724,6 +1764,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     } else {
         Ok(())
     };
+    audio_probe::close();
     building_material::close_roof_trace()?;
     if let Some(file) = frame_profile.as_mut() {
         use std::io::Write;
@@ -1982,6 +2023,7 @@ mod replay_runtime_tests {
         args.extend([
             "--camera-preview".into(),
             "--enhanced-audio".into(),
+            "--polyphonic-audio".into(),
             "--drop-lifetime".into(),
             "30".into(),
             "--save".into(),

@@ -162,6 +162,8 @@ def play(args):
     options = ['--save', ROOT / 'data/saves/usa.sav', '--controls', ROOT / 'data/config/controls.cfg', '--camera-preview', '--replays', ROOT / 'replays']
     if not args.original_audio:
         options += ['--enhanced-audio']
+        if args.polyphonic_audio:
+            options += ['--polyphonic-audio']
     if args.drop_lifetime:
         options += ['--drop-lifetime', str(args.drop_lifetime)]
     if args.record_session and not args.no_record:
@@ -356,6 +358,7 @@ def main():
     play_parser.add_argument('--no-record', action='store_true')
     play_parser.add_argument('--record-session', action='store_true')
     play_parser.add_argument('--original-audio', action='store_true')
+    play_parser.add_argument('--polyphonic-audio', action='store_true')
     play_parser.add_argument('--original-renderer', action='store_true')
     play_parser.add_argument('--frames', type=int, default=0)
     play_parser.add_argument('--drop-lifetime', type=int, choices=range(301), default=30, metavar='0..300')

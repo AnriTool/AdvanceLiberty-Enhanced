@@ -13,3 +13,7 @@ external checkout, its Git repository and its target directory are not needed
 for building.
 
 Original MIT/Apache-2.0 license texts and THIRD-PARTY.md are retained.
+
+`gba-core` also contains a local observation-only PCM sidecar. It follows
+DMA/FIFO timing for optional host effects without changing guest audio or memory.
+The USA driver integration lives in the application's `polyphonic_audio` module.

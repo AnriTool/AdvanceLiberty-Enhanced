@@ -11,6 +11,7 @@ param(
     [switch]$OriginalMenus,
     [switch]$EnhancedAudio = $true,
     [switch]$OriginalAudio,
+    [switch]$PolyphonicAudio,
     [switch]$PreserveCash,
     [ValidateRange(0,300)][uint32]$DropLifetime = 30,
     [switch]$AffineTextures,
@@ -30,6 +31,7 @@ foreach ($path in @($SavePath, $ControlsPath)) {
 }
 $runtimeOptions = @('--camera-preview', '--replays', (Join-Path $ProjectRoot 'replays'))
 if ($EnhancedAudio -and !$OriginalAudio) { $runtimeOptions += '--enhanced-audio' }
+if ($PolyphonicAudio -and !$OriginalAudio) { $runtimeOptions += '--polyphonic-audio' }
 if ($PreserveCash) { $runtimeOptions += '--preserve-cash' }
 if ($DropLifetime -gt 0) { $runtimeOptions += @('--drop-lifetime', "$DropLifetime") }
 if ($OriginalMenus) { $runtimeOptions += '--original-menus' }

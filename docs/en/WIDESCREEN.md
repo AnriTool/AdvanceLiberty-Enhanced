@@ -103,6 +103,8 @@ uses two independent row regions: one worker thread and the calling thread.
 Terrain, sprites and pixel effects keep the same sampling and drawing order.
 Smaller outputs and single-core systems use one region. The prepared HUD layer
 is cached until its source pixels, layout or viewport change.
+The building layer also renders independent row regions on multicore systems,
+preserving face order and identical affine/perspective UV calculations per region.
 
 Host audio waits for one callback of samples after clearing its queue. If output
 runs dry, it rebuilds a two-callback queue before resuming, retaining a small

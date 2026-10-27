@@ -13,6 +13,7 @@ pub const TITLE: &str = "AdvanceLiberty: Enhanced";
 struct Options {
     rom: Option<PathBuf>,
     original_audio: bool,
+    polyphonic_audio: bool,
     record_session: bool,
     frames: u64,
     drop_lifetime: u32,
@@ -42,6 +43,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     while i < args.len() {
         match args[i].as_str() {
             "--original-audio" => options.original_audio = true,
+            "--polyphonic-audio" => options.polyphonic_audio = true,
             "--no-record" => options.record_session = false,
             "--record-session" => options.record_session = true,
             "--rom" | "--frames" | "--drop-lifetime" => {
@@ -167,7 +169,7 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if args == ["--help"] {
-        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--drop-lifetime 0..300 (default: 30)\n--record-session\n--frames N (diagnostics)\n\nEnhanced Audio is enabled by default. Diagnostic sessions require --record-session.", std::env::consts::EXE_SUFFIX);
+        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--polyphonic-audio (experimental simultaneous SFX)\n--drop-lifetime 0..300 (default: 30)\n--record-session\n--frames N (diagnostics)\n\nEnhanced Audio is enabled by default. Diagnostic sessions require --record-session.", std::env::consts::EXE_SUFFIX);
         println!("{help}");
         let _ = sdl2::messagebox::show_simple_message_box(
             sdl2::messagebox::MessageBoxFlag::INFORMATION,
@@ -222,6 +224,9 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         .arg(root.join("data/config/controls.cfg"));
     if !options.original_audio {
         child.arg("--enhanced-audio");
+        if options.polyphonic_audio {
+            child.arg("--polyphonic-audio");
+        }
     }
     if options.drop_lifetime != 0 {
         child
