@@ -37,6 +37,7 @@ pub fn is_portable(args: &[String]) -> bool {
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         drop_lifetime: 30,
+        polyphonic_audio: true,
         ..Default::default()
     };
     let mut i = 0;
@@ -44,6 +45,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         match args[i].as_str() {
             "--original-audio" => options.original_audio = true,
             "--polyphonic-audio" => options.polyphonic_audio = true,
+            "--no-polyphonic-audio" => options.polyphonic_audio = false,
             "--no-record" => options.record_session = false,
             "--record-session" => options.record_session = true,
             "--rom" | "--frames" | "--drop-lifetime" => {
@@ -169,7 +171,7 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if args == ["--help"] {
-        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--polyphonic-audio (experimental simultaneous SFX)\n--drop-lifetime 0..300 (default: 30)\n--record-session\n--frames N (diagnostics)\n\nEnhanced Audio is enabled by default. Diagnostic sessions require --record-session.", std::env::consts::EXE_SUFFIX);
+        let help = format!("{TITLE}\n\nPlace your USA .gba dump in roms/ and run AdvanceLiberty{}.\n\nOptional arguments:\n--rom FILE\n--original-audio\n--no-polyphonic-audio (disable simultaneous SFX)\n--drop-lifetime 0..300 (default: 30)\n--record-session\n--frames N (diagnostics)\n\nEnhanced Audio and simultaneous effects are enabled by default. Diagnostic sessions require --record-session.", std::env::consts::EXE_SUFFIX);
         println!("{help}");
         let _ = sdl2::messagebox::show_simple_message_box(
             sdl2::messagebox::MessageBoxFlag::INFORMATION,
@@ -226,6 +228,8 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         child.arg("--enhanced-audio");
         if options.polyphonic_audio {
             child.arg("--polyphonic-audio");
+        } else {
+            child.arg("--no-polyphonic-audio");
         }
     }
     if options.drop_lifetime != 0 {
@@ -284,6 +288,8 @@ mod tests {
     fn launch_defaults_overrides_and_worker_detection() {
         let defaults = parse(&[]).unwrap();
         assert_eq!(defaults.drop_lifetime, 30);
+        assert!(defaults.polyphonic_audio);
+        assert!(!parse(&args(&["--no-polyphonic-audio"])).unwrap().polyphonic_audio);
         assert!(parse(&args(&["--record-session"])).unwrap().record_session);
         assert!(!defaults.original_audio && !defaults.record_session);
         let options = parse(&args(&[

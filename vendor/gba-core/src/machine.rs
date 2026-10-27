@@ -43,6 +43,7 @@ pub enum StepEvent {
 
 impl Machine {
     /// Isolated research branch. Includes banked CPU state, device latches and cache.
+    /// Cartridge bytes and decode entries share storage until modified.
     pub fn try_fork_for_research(&self) -> Result<Self, &'static str> {
         Ok(Self {
             cpu: self.cpu.clone(),

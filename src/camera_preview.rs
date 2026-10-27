@@ -153,6 +153,7 @@ fn closest_supported_alpha(requested: f64, minimum: f64, supports: impl Fn(f64) 
     right
 }
 pub struct Preview {
+    native_worker: Option<std::sync::Arc<building_projection::WideWorker>>,
     wide: bool,
     ground_rom: Option<std::sync::Arc<Vec<u8>>>,
     material_bank: building_material::MaterialBank,
@@ -273,6 +274,7 @@ impl Preview {
             })
             .transpose()?;
         Ok(Self {
+            native_worker: building_projection::WideWorker::new(),
             wide: false,
             ground_rom: None,
             material_bank: Default::default(),
@@ -410,6 +412,7 @@ impl Preview {
                 observer: {
                     let mut observer = building_projection::Observer::default();
                     observer.set_wide(self.wide);
+                    observer.set_worker(self.native_worker.clone());
                     observer
                 },
                 ground: ground_projection::Observer::default(),
@@ -431,12 +434,13 @@ impl Preview {
             );
         }
         if UPLOAD_RETURNS.contains(&key) {
-            if let Some(p) = self.pending.take() {
+            if let Some(mut p) = self.pending.take() {
                 if p.stages != [1; 4] || p.camera != camera(&m.bus) {
                     self.reject(m.bus.frames, "Scene changed during capture".into());
                     return;
                 }
                 let validation_start = std::time::Instant::now();
+                p.observer.complete_wide();
                 for reason in p.observer.side_failures() {
                     self.event(m.bus.frames, "wide_object_failure", reason);
                 }
@@ -539,7 +543,7 @@ impl Preview {
                         let ground_world = {
                             let rom = self
                                 .ground_rom
-                                .get_or_insert_with(|| std::sync::Arc::new(m.bus.rom.clone()))
+                                .get_or_insert_with(|| m.bus.rom.shared())
                                 .clone();
                             ground_projection::WorldGround::capture(&m.bus, rom)
                         };
@@ -925,6 +929,10 @@ impl Preview {
     }
     pub fn status(&self) -> &'static str {
         self.status
+    }
+    pub fn profile_counters(&self) -> ([u128; 4], [usize; 3]) {
+        ([self.validate_ns, self.graphics_ns, self.geometry_ns, self.compose_ns],
+            self.current.as_ref().map_or([0; 3], |s| s.materials.face_counts()))
     }
     pub fn finish(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(

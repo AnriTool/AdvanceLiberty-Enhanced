@@ -118,7 +118,7 @@ const FontData = (() => {
  const $=id=>document.getElementById(id),F=FontData,KEY='AdvanceLiberty.font-editor.v1';
  let doc=F.fresh(),selected=F.chars(doc.alphabet)[0],mode='font',brush='#',colorBrush='1',filename='xx.json',clipboard=null,stroke=null,keyboard=[0,0];
  const undo=[],redo=[];let draftTimer;
- const themes={gold:['transparent','#ffe976','#eab63e','#c78a23','#fff5c0','#e3d187','#ac8c47','#805c25','#68430d','#2c1a09','#f5db83','#cda553','#97691e','#76501b','#49321c','#17130f'],gray:['transparent','#ffffff','#d3dae4','#a8b6c6','#edf2f7','#becad6','#8c9caf','#697c90','#455468','#202a38','#d9e7f1','#adbdcf','#879bb3','#60778f','#3b4d62','#121c29'],debug:['transparent','#fff','#ff695c','#ffbd42','#8be47c','#42cfbc','#52bfff','#807dff','#e989f7','#a86e35','#f2df9c','#baeee4','#b2c5fc','#d6a9f5','#829277','#344258']};
+ const themes={gold:['transparent','#FFEF00','#FFE700','#F7D608','#EFCE08','#E7BD10','#DEB510','#D6A518','#CE9C21','#000000','#AD8418','#9C7318','#846310','#6B5210','#5A4208','#FFFFFF'],gray:['transparent','#ffffff','#d3dae4','#a8b6c6','#edf2f7','#becad6','#8c9caf','#697c90','#455468','#202a38','#d9e7f1','#adbdcf','#879bb3','#60778f','#3b4d62','#121c29'],debug:['transparent','#fff','#ff695c','#ffbd42','#8be47c','#42cfbc','#52bfff','#807dff','#e989f7','#a86e35','#f2df9c','#baeee4','#b2c5fc','#d6a9f5','#829277','#344258']};
  function message(s,type=''){$('notice').textContent=s;$('notice').className='notice '+type;}
  function safe(fn){return (...args)=>{try{fn(...args);}catch(e){message(e.message,'error');}};}
  function snapshot(){return JSON.stringify({doc,selected,mode,filename});}

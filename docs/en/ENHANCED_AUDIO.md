@@ -32,12 +32,15 @@ are sampled at the end of each frame. Rapid register changes within a frame
 may differ from the hardware path. Compare music, gunshots, engines and sirens
 at identical SFX/Music settings when judging the result.
 
-## Experimental simultaneous effects
+## Simultaneous effects
 
-Use `AdvanceLiberty.exe --polyphonic-audio`, `Play.bat -PolyphonicAudio`, or
-`bash play.sh --polyphonic-audio` to try simultaneous queued PCM effects.
-This is opt-in and requires Enhanced Audio; Original Audio takes precedence
-in the launchers. It is independent of render settings.
+Normal EXE, `Play.bat` and `play.sh` launches enable simultaneous queued PCM
+effects by default. Disable them with `--no-polyphonic-audio` (EXE/Linux) or
+`Play.bat -NoPolyphonicAudio`, retaining Enhanced Output processing. The explicit
+`--polyphonic-audio` / `-PolyphonicAudio` options remain accepted. This requires
+Enhanced Audio; Original Audio takes precedence in the launchers. It is
+independent of render settings. Low-level headless diagnostic exports remain
+opt-in, and gameplay replay snapshots retain their recorded audio mode.
 
 The USA driver maintains priority-sorted voice lists and renders the first voice
 in each group. An effect can suppress another voice even while that voice remains
@@ -46,6 +49,12 @@ PCM voices behind the selected heads in effect groups 0 and 2. Group 2 voices
 with independent pitch are mapped to the selected voice's timer grid. The original audible
 head is excluded. Volume and voice allocation/lifetime still come from the game;
 this does not expand the guest pool or revive discarded sounds.
+
+Only one copy of each PCM sample is audible through the sidecar. Samples already
+selected by any original channel are excluded, and repeated queued copies are
+deduplicated across both effect groups. This avoids stacking successive skid or
+impact sounds. Different suppressed effects can still overlap, so this mode
+intentionally sounds different from the normal mix.
 
 Extra samples follow the driver's buffer prefix copies and the actual sound DMA
 and FIFO events, including dropped writes, resets and held DAC values. They join

@@ -42,7 +42,7 @@ pub fn step_cached<B: Bus>(cpu: &mut Cpu, bus: &mut B, cache: &mut DecodeCache) 
 /// still goes through the bus on every step.
 #[derive(Clone)]
 pub struct DecodeCache {
-    entries: Box<[CacheEntry]>,
+    entries: std::sync::Arc<[CacheEntry]>,
 }
 
 #[derive(Clone, Copy)]
@@ -64,7 +64,7 @@ impl Default for DecodeCache {
             instr: decode_arm(0, 0),
         };
         DecodeCache {
-            entries: vec![empty; CACHE_SLOTS].into_boxed_slice(),
+            entries: vec![empty; CACHE_SLOTS].into(),
         }
     }
 }
@@ -72,13 +72,14 @@ impl Default for DecodeCache {
 impl DecodeCache {
     #[inline]
     fn get_thumb(&mut self, addr: u32, raw: u16) -> Instr {
-        let e = &mut self.entries[((addr >> 1) as usize) & (CACHE_SLOTS - 1)];
+        let index = ((addr >> 1) as usize) & (CACHE_SLOTS - 1);
+        let e = &self.entries[index];
         let key = addr | 1;
         if e.key == key && e.raw == raw as u32 {
             return e.instr;
         }
         let instr = decode_thumb(raw, addr);
-        *e = CacheEntry {
+        std::sync::Arc::make_mut(&mut self.entries)[index] = CacheEntry {
             key,
             raw: raw as u32,
             instr,
@@ -88,12 +89,13 @@ impl DecodeCache {
 
     #[inline]
     fn get_arm(&mut self, addr: u32, raw: u32) -> Instr {
-        let e = &mut self.entries[((addr >> 2) as usize) & (CACHE_SLOTS - 1)];
+        let index = ((addr >> 2) as usize) & (CACHE_SLOTS - 1);
+        let e = &self.entries[index];
         if e.key == addr && e.raw == raw {
             return e.instr;
         }
         let instr = decode_arm(raw, addr);
-        *e = CacheEntry {
+        std::sync::Arc::make_mut(&mut self.entries)[index] = CacheEntry {
             key: addr,
             raw,
             instr,
@@ -719,6 +721,22 @@ fn exec_msr(cpu: &mut Cpu, spsr: bool, fields: u8, value: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cloned_decode_tables_share_hits_and_detach_independent_misses() {
+        let mut live=super::DecodeCache::default();
+        let first=live.get_arm(0x08000000,0xe3a00001);
+        let mut fork=live.clone();
+        assert_eq!(fork.get_arm(0x08000000,0xe3a00001).disasm(),first.disasm());
+        assert!(std::sync::Arc::ptr_eq(&live.entries,&fork.entries));
+        fork.get_arm(0x08000000,0xe3a00002);
+        assert!(!std::sync::Arc::ptr_eq(&live.entries,&fork.entries));
+        assert_eq!(live.get_arm(0x08000000,0xe3a00001).disasm(),first.disasm());
+        let thumb=live.get_thumb(0x08000000,0x2003);
+        let cloned=live.clone();
+        assert!(std::sync::Arc::ptr_eq(&live.entries,&cloned.entries));
+        fork.get_thumb(0x08000000,0x2004);
+        assert_eq!(live.get_thumb(0x08000000,0x2003).disasm(),thumb.disasm());
+    }
     use super::*;
     use crate::cpu::FLAG_I;
 

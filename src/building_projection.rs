@@ -1,9 +1,60 @@
 //! Read-only USA building transform/projection checks and fractional outlines.
 //! Wide model selection runs in an isolated native geometry pass.
 use gba_core::{Machine, MemMap};
-use std::{collections::HashMap, io::Write, path::Path};
+use std::{collections::HashMap, io::Write, path::Path, sync::Arc};
+type CaptureResult = Result<crate::building_material::Capture, String>;
+type Task = (Machine, std::sync::mpsc::SyncSender<CaptureResult>);
+struct CaptureJob(std::sync::mpsc::Receiver<CaptureResult>);
+impl CaptureJob {
+    fn finish(self) -> CaptureResult {
+        self.0
+            .recv()
+            .map_err(|_| "Wide geometry worker stopped".to_string())?
+    }
+}
+/// Owns all queued native work; destruction joins before DLLs can unload.
+pub(crate) struct WideWorker {
+    tasks: std::sync::mpsc::SyncSender<Option<Task>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl WideWorker {
+    pub fn new() -> Option<Arc<Self>> {
+        if !std::thread::available_parallelism().is_ok_and(|n| n.get() >= 2) {
+            return None;
+        }
+        let table = crate::RESCUE.with(|t| t.borrow().clone());
+        let (tasks, receiver) = std::sync::mpsc::sync_channel::<Option<Task>>(1);
+        let thread = std::thread::Builder::new()
+            .name("wide-geometry".into())
+            .spawn(move || {
+                while let Ok(Some((machine, reply))) = receiver.recv() {
+                    let result = Observer::wide_buildings_owned(machine, &table);
+                    let _ = reply.send(result);
+                }
+            })
+            .ok()?;
+        Some(Arc::new(Self {
+            tasks,
+            thread: Some(thread),
+        }))
+    }
+    fn submit(&self, machine: Machine) -> Option<CaptureJob> {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        // Never queue unbounded stale scenes or block gameplay behind one.
+        self.tasks.try_send(Some((machine, reply))).ok()?;
+        Some(CaptureJob(result))
+    }
+}
+impl Drop for WideWorker {
+    fn drop(&mut self) {
+        let _ = self.tasks.send(None);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 pub(crate) fn bytes(m: &Machine, addr: u32, n: usize) -> Result<&[u8], String> {
-    let (mask, data) = match addr >> 24 {
+    let (mask, data): (u32, &[u8]) = match addr >> 24 {
         2 => (0x3ffff, &m.bus.ewram),
         3 => (0x7fff, &m.bus.iwram),
         8 => (0x1ffffff, &m.bus.rom),
@@ -51,6 +102,8 @@ pub struct Observer {
     camera: Option<[i32; 3]>,
     extend_world: bool,
     extended_materials: Option<crate::building_material::Capture>,
+    native_worker: Option<Arc<WideWorker>>,
+    extended_job: Option<CaptureJob>,
 }
 fn wide_model_edge_tile(regs: &mut [u32; 16]) {
     let (left, right) = (regs[5] as i32, regs[4] as i32);
@@ -66,6 +119,19 @@ fn project(v: [f64; 3]) -> [f64; 2] {
     [120.0 + 118.0 * v[0] / v[2], 120.0 - 118.0 * v[1] / v[2]]
 }
 impl Observer {
+    pub fn set_worker(&mut self, worker: Option<Arc<WideWorker>>) {
+        self.native_worker = worker;
+    }
+    pub fn complete_wide(&mut self) {
+        if let Some(job) = self.extended_job.take() {
+            match job.finish() {
+                Ok(materials) => self.extended_materials = Some(materials),
+                Err(reason) => self
+                    .objects
+                    .record_side_failure(format!("buildings: {reason}")),
+            }
+        }
+    }
     pub fn set_wide(&mut self, wide: bool) {
         self.extend_world = wide;
         self.materials.wide = wide;
@@ -105,6 +171,7 @@ impl Observer {
         if self.pending.is_some() || self.projection.is_some() {
             return Err("Incomplete geometry capture".into());
         }
+        self.complete_wide();
         crate::ground_projection::validate_live(source)?;
         if source.io[0x10..0x14] != [0; 4] {
             return Err("Unsupported building scroll".into());
@@ -118,11 +185,17 @@ impl Observer {
         Ok((self.materials, objects))
     }
     fn wide_buildings(m: &Machine) -> Result<crate::building_material::Capture, String> {
-        let mut fork = m.try_fork_for_research().map_err(str::to_string)?;
+        let fork = m.try_fork_for_research().map_err(str::to_string)?;
+        crate::RESCUE.with(|table| Self::wide_buildings_owned(fork, &table.borrow()))
+    }
+    fn wide_buildings_owned(
+        mut fork: Machine,
+        table: &HashMap<u32, Vec<crate::BlockFn>>,
+    ) -> Result<crate::building_material::Capture, String> {
         let mut capture = Self::default();
         capture.materials.wide = true;
         capture.materials.geometry_only = true;
-        let scale = word(m, 0x03000060)? as f64 / 65536.;
+        let scale = word(&fork, 0x03000060)? as f64 / 65536.;
         if scale <= 0. {
             return Err("Invalid wide building scale".into());
         }
@@ -130,36 +203,49 @@ impl Observer {
             / scale
             * 65536.)
             .ceil() as i32;
-        crate::scene_replay::presentation_observe(&mut fork, 0x0800d53f, |fork, key| {
-            if key == 0x0800d319 {
-                for (offset, delta) in [(0x84, -padding), (0x88, padding)] {
-                    let value =
-                        i32::from_le_bytes(fork.bus.iwram[offset..offset + 4].try_into().unwrap());
-                    fork.bus.iwram[offset..offset + 4]
-                        .copy_from_slice(&value.wrapping_add(delta).to_le_bytes());
+        crate::scene_replay::presentation_observe_using(
+            &mut fork,
+            0x0800d53f,
+            table,
+            |fork, key| {
+                if key == 0x0800d319 {
+                    for (offset, delta) in [(0x84, -padding), (0x88, padding)] {
+                        let value = i32::from_le_bytes(
+                            fork.bus.iwram[offset..offset + 4].try_into().unwrap(),
+                        );
+                        fork.bus.iwram[offset..offset + 4]
+                            .copy_from_slice(&value.wrapping_add(delta).to_le_bytes());
+                    }
                 }
-            }
-            // The guest's screen-tile visibility bookkeeping has only 30
-            // columns. Map side-only bounds to the nearest edge tile in this
-            // copy; actual geometry retains world coordinates for the host clipper.
-            if key == 0x0800e6c1 {
-                wide_model_edge_tile(&mut fork.cpu.regs);
-            }
-            if capture.interested(key) {
-                capture.observe(fork, key)?;
-            }
-            // Geometry and atlas pointers are complete at the batch boundary.
-            // The host rasterizer consumes them, so guest pixel loops are unnecessary.
-            if key == 0x0800db65 {
-                fork.cpu.regs[15] = fork.cpu.regs[14] & !1;
-            }
-            Ok(())
-        })?;
+                // The guest's screen-tile visibility bookkeeping has only 30
+                // columns. Map side-only bounds to the nearest edge tile in this
+                // copy; actual geometry retains world coordinates for the host clipper.
+                if key == 0x0800e6c1 {
+                    wide_model_edge_tile(&mut fork.cpu.regs);
+                }
+                if capture.interested(key) {
+                    capture.observe(fork, key)?;
+                }
+                // Geometry and atlas pointers are complete at the batch boundary.
+                // The host rasterizer consumes them, so guest pixel loops are unnecessary.
+                if key == 0x0800db65 {
+                    fork.cpu.regs[15] = fork.cpu.regs[14] & !1;
+                }
+                Ok(())
+            },
+        )?;
         capture.materials.complete_offscreen();
         Ok(capture.materials)
     }
     pub fn observe(&mut self, m: &Machine, key: u32) -> Result<(), String> {
         if key == 0x0800d301 && self.extend_world {
+            if let Some(worker) = &self.native_worker {
+                let fork = m.try_fork_for_research().map_err(str::to_string)?;
+                if let Some(job) = worker.submit(fork) {
+                    self.extended_job = Some(job);
+                    return Ok(());
+                }
+            }
             match Self::wide_buildings(m) {
                 Ok(materials) => self.extended_materials = Some(materials),
                 Err(reason) => self
@@ -489,6 +575,33 @@ fn line(image: &mut [u16], width: usize, height: usize, a: [f64; 2], b: [f64; 2]
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dropping_worker_joins_cancelled_work_before_native_libraries_can_unload() {
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = completed.clone();
+        let (tasks, _receiver) = std::sync::mpsc::sync_channel(1);
+        let worker = WideWorker {
+            tasks,
+            thread: Some(std::thread::spawn(move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            })),
+        };
+        drop(worker);
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+    #[test]
+    fn wide_job_failures_keep_the_existing_capture_failure_path() {
+        let mut observer = Observer::default();
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        reply.send(Err("native block unavailable".into())).unwrap();
+        observer.extended_job = Some(CaptureJob(result));
+        observer.complete_wide();
+        observer.complete_wide();
+        assert_eq!(
+            observer.side_failures(),
+            ["buildings: native block unavailable"]
+        );
+    }
     #[test]
     fn wide_model_bookkeeping_admits_side_only_boxes_and_keeps_central_boxes() {
         for (left, right, expected) in [

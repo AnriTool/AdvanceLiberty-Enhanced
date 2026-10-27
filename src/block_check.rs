@@ -31,7 +31,7 @@ impl Check {
         let fork = m.try_fork_for_research();
         m.bus.rom = rom;
         let mut fork = fork?;
-        fork.bus.rom = std::mem::take(&mut self.rom);
+        fork.bus.rom = std::mem::take(&mut self.rom).into();
         Ok(Some(fork))
     }
     pub fn compare(
@@ -116,7 +116,7 @@ impl Check {
         ) {
             differences.push("IRQ/HALT state".to_string());
         }
-        self.rom = std::mem::take(&mut before.bus.rom);
+        self.rom = std::mem::take(&mut before.bus.rom).into_vec();
         self.remaining -= 1;
         self.checked += 1;
         if let Some((boundary_clock, boundary_pc, boundary_steps)) = boundary {

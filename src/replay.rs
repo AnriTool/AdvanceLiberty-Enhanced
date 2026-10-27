@@ -320,7 +320,7 @@ pub fn load(path: &Path, rom: &[u8]) -> Result<(Initial, Playback)> {
     {
         return Err("Invalid replay controls".into());
     }
-    initial.machine.bus.rom = rom.to_vec();
+    initial.machine.bus.rom = rom.to_vec().into();
     let mut previous = 0;
     for (offset, patch) in &initial.patches {
         let end = offset

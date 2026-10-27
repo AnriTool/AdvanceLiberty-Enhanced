@@ -26,6 +26,7 @@ pub mod ppu;
 pub mod pcm_overlay;
 pub mod rdrv;
 pub mod rtc;
+pub mod rom;
 pub mod shadow;
 
 pub use bus::Bus;

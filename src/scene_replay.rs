@@ -75,9 +75,10 @@ pub(crate) fn presentation_span(m: &mut Machine, end: u32) -> Result<(), String>
         Err("Presentation span exceeded budget".into())
     })
 }
-pub(crate) fn presentation_observe(
+pub(crate) fn presentation_observe_using(
     m: &mut Machine,
     end: u32,
+    table: &HashMap<u32, Vec<BlockFn>>,
     mut observe: impl FnMut(&mut Machine, u32) -> Result<(), String>,
 ) -> Result<(), String> {
     let api = native_host::Api::new(RtApi {
@@ -85,24 +86,21 @@ pub(crate) fn presentation_observe(
         ..RT_API
     });
     m.cpu.cpsr |= gba_core::cpu::FLAG_I;
-    crate::RESCUE.with(|table| {
-        let table = table.borrow();
-        for _ in 0..1_000_000 {
-            let pc = key(m);
-            if pc == end {
-                return Ok(());
-            }
-            if m.bus.halted {
-                return Err("Presentation geometry halted".into());
-            }
-            observe(m, pc)?;
-            if key(m) != pc {
-                continue;
-            }
-            step(m, &api.base, &table)?;
+    for _ in 0..1_000_000 {
+        let pc = key(m);
+        if pc == end {
+            return Ok(());
         }
-        Err("Presentation geometry exceeded budget".into())
-    })
+        if m.bus.halted {
+            return Err("Presentation geometry halted".into());
+        }
+        observe(m, pc)?;
+        if key(m) != pc {
+            continue;
+        }
+        step(m, &api.base, table)?;
+    }
+    Err("Presentation geometry exceeded budget".into())
 }
 fn key(m: &Machine) -> u32 {
     m.cpu.regs[15] | m.cpu.thumb() as u32

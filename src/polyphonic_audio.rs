@@ -40,10 +40,18 @@ fn prefix(bus: &mut MemMap, group: usize) {
     }
 }
 fn prepare(bus: &mut MemMap) {
-    prepare_group(bus, 0);
-    prepare_group(bus, 2);
+    let mut audible = std::collections::HashSet::new();
+    // A queued copy of an already audible sample is a replacement, not a
+    // missing independent effect. Never amplify it with its older copies.
+    for group in 0..4 {
+        if let Some(head) = slot(word(bus, DRIVER + 0xb8c + group * 4)) {
+            audible.insert(word(bus, head));
+        }
+    }
+    prepare_group(bus, 0, &mut audible);
+    prepare_group(bus, 2, &mut audible);
 }
-fn prepare_group(bus: &mut MemMap, group: usize) {
+fn prepare_group(bus: &mut MemMap, group: usize, audible: &mut std::collections::HashSet<u32>) {
     let Some(buffer) = buffer(bus, group) else {
         return;
     };
@@ -82,10 +90,16 @@ fn prepare_group(bus: &mut MemMap, group: usize) {
         let volume = u16::from_le_bytes(bus.ewram[p + 8..p + 10].try_into().unwrap()) as f32;
         // Paused voices advance neither in the driver nor in the sidecar.
         // Only the verified raw signed-8-bit PCM path is supported here.
-        if bus.ewram[p + 0x21] & 0x10 == 0 && volume <= 256.0 && length <= 0x100000 {
+        if bus.ewram[p + 0x21] & 0x10 == 0
+            && volume > 0.0
+            && volume <= 256.0
+            && length <= 0x100000
+            && !audible.contains(&sample)
+        {
             if let Some(offset) = sample.checked_sub(0x08000000).map(|v| v as usize) {
                 if offset >= 16 && bus.rom.get(offset - 16..offset - 12) == Some(&[0, 0, 0, 0]) {
                     if let Some(data) = bus.rom.get(offset..offset.saturating_add(length)) {
+                        audible.insert(sample);
                         // Original completion/loop restart occurs at the next
                         // tick; the remainder of this chunk is silence.
                         for (i, output) in mixed[..count].iter_mut().enumerate() {
@@ -127,6 +141,35 @@ pub extern "C" fn read32(m: *mut c_void, address: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_effects_are_not_stacked_or_duplicated_across_groups() {
+        let mut rom = vec![0; 4096];
+        rom[16..336].fill(40);
+        let mut m = Machine::new(rom);
+        let b = &mut m.bus;
+        b.pcm_overlay = Some(Default::default());
+        put(b, DRIVER + 0xb9c, 0x03006700);
+        put(b, DRIVER + 0xba0, 0x030067e0);
+        put(b, DRIVER + 0xb8c, POOL);
+        for i in 0..3 {
+            let p = slot(POOL + i * STRIDE).unwrap();
+            put(b, p, 0x08000010);
+            put(b, p + 0xc, 320);
+            put(b, p + 0x10, 320);
+            b.ewram[p + 8..p + 10].copy_from_slice(&256u16.to_le_bytes());
+            put(b, p + 0x18, 160 << 8);
+            put(b, p + 0x24, if i < 2 { POOL + (i + 1) * STRIDE } else { 0 });
+        }
+        prepare(b);
+        assert_eq!(b.pcm_overlay.as_ref().unwrap().memory[&0x03006740], 0.0);
+        put(b, slot(POOL).unwrap(), 0x08000810);
+        prepare(b);
+        assert_eq!(b.pcm_overlay.as_ref().unwrap().memory[&0x03006740], 40.0); // one, not two
+        put(b, DRIVER + 0xb94, POOL + STRIDE); // already audible on the other FIFO
+        prepare(b);
+        assert_eq!(b.pcm_overlay.as_ref().unwrap().memory[&0x03006740], 0.0);
+        assert_eq!(b.pcm_overlay.as_ref().unwrap().memory[&0x03006820], 0.0);
+    }
     fn put(bus: &mut MemMap, offset: usize, value: u32) {
         bus.ewram[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
@@ -187,6 +230,7 @@ mod tests {
             put(b, p + 0x24, if i < 2 { POOL + (i + 1) * STRIDE } else { 0 });
         }
         let secondary = slot(POOL + STRIDE).unwrap();
+        put(b, slot(POOL).unwrap(), 0x08000410); // a different audible sample
         put(b, secondary + 4, 300 << 8); // 20 samples left
         b.ewram[slot(POOL + 2 * STRIDE).unwrap() + 0x21] = 0x10; // paused
         let original = b.ewram.clone();

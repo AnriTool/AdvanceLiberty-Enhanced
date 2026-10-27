@@ -122,7 +122,7 @@ pub struct MemMap {
     pub vram: Vec<u8>,
     pub oam: Vec<u8>,
     #[serde(skip)]
-    pub rom: Vec<u8>,
+    pub rom: crate::rom::Rom,
     /// Physical cartridge size, independent of host-only appended text/font data.
     /// EEPROM decoding must retain the original cartridge's address lines.
     cartridge_rom_len: usize,
@@ -365,7 +365,7 @@ impl MemMap {
             vram: vec![0; 0x1_8000],
             oam: vec![0; 0x400],
             cartridge_rom_len: rom.len(),
-            rom,
+            rom: rom.into(),
             sram: vec![0xFF; 0x1_0000],
             clock: 0,
             reg_ie: 0,

@@ -91,10 +91,25 @@ queue. Host underruns count callbacks with insufficient game samples; cleared
 or paused audio is excluded. FPS measures average presented frames, so brief
 budget overruns can still occur near 60 FPS.
 
+`present_interval_ns` records time between actual frame-submission calls;
+`present_lateness_ns` records how late submission starts relative to its deadline.
+The first frame after pause or replay transitions has interval zero. Headless
+runs report zeros for both fields. Unlike `total_ns`, these values expose visible
+cadence when frame preparation time varies. Frames are prepared and game audio
+is queued before waiting for the submission deadline. A long stall rebases the
+schedule to avoid a burst of catch-up frames; the last millisecond uses a short
+spin wait after the coarse sleep to reduce scheduler overshoot.
+
 The low-level runtime also accepts `--frame-profile NEW_CSV` and
 `--roof-trace NEW_CSV START_FRAME END_FRAME`. Roof traces contain native,
 model-derived and final orientations plus clipped endpoints. Normal launches
 without diagnostic recording create neither report.
+
+`--capture-profile NEW_CSV` additionally measures observation time and call count
+per GBA frame, cumulative validation/graphics/geometry/composition times, and the
+current scene's flat, 64×64 and 128×128 textured face counts. Use it with
+`--camera-preview` for offline geometry investigations; cumulative timing columns
+must be differenced between rows. It is off in ordinary session recording.
 
 ## Composition and audio buffering
 
@@ -105,6 +120,20 @@ Smaller outputs and single-core systems use one region. The prepared HUD layer
 is cached until its source pixels, layout or viewport change.
 The building layer also renders independent row regions on multicore systems,
 preserving face order and identical affine/perspective UV calculations per region.
+
+Read-only geometry and sprite passes fork the machine state. Cartridge bytes and
+the decode memo table share storage until a writer changes them. RAM, devices and
+CPU state remain independent. Runtime patches and language changes detach shared
+cartridge data before writing, preserving existing snapshots. This avoids large
+ROM/table copies at scene boundaries without changing guest clocks or rendering.
+
+On multicore systems, the extra wide building pass runs on one persistent worker with its own
+machine snapshot and an immutable native function table. The matching scene
+upload waits for that result before validation and material merging. Its queue
+holds at most one waiting scene; a busy or unavailable worker uses the synchronous
+pass. Cancelled results are discarded; shutdown joins all outstanding work before
+native libraries can unload. Single-core systems also use the synchronous pass. Background work
+does not change the guest's geometry, simulation cadence or native coverage.
 
 Host audio waits for one callback of samples after clearing its queue. If output
 runs dry, it rebuilds a two-callback queue before resuming, retaining a small

@@ -429,6 +429,14 @@ fn same_face(a: &Face, b: &Face) -> bool {
         })
 }
 impl Capture {
+    pub fn face_counts(&self) -> [usize; 3] {
+        let mut counts = [0; 3];
+        for face in &self.faces {
+            let index = if face.input.uv.is_empty() { 0 } else if face.input.size == 64 { 1 } else { 2 };
+            counts[index] += 1;
+        }
+        counts
+    }
     pub fn append_missing_geometry(&mut self, side: &Self) -> usize {
         // The side pass preserves the native painter order. Insert missing faces
         // around shared anchors rather than painting every edge building last.

@@ -99,6 +99,9 @@ pub struct Desktop {
     language_scan: bool,
     languages: Vec<crate::localization::Choice>,
     next_frame: Instant,
+    last_present: Option<Instant>,
+    present_interval_ns: u128,
+    present_lateness_ns: u128,
     controls: crate::controls::Controls,
     input_latch: crate::controls::InputLatch,
     controls_path: std::path::PathBuf,
@@ -273,6 +276,9 @@ impl Desktop {
             release_input: false,
             preferences_path,
             next_frame: Instant::now(),
+            last_present: None,
+            present_interval_ns: 0,
+            present_lateness_ns: 0,
             present_frames: 0,
             present_ns: 0,
             fps_started: Instant::now(),
@@ -763,6 +769,9 @@ impl Desktop {
                 audio.clear();
             }
             self.next_frame = Instant::now();
+            self.last_present = None;
+            self.present_interval_ns = 0;
+            self.present_lateness_ns = 0;
             std::thread::sleep(Duration::from_millis(10));
             return Ok(Some(0x3ff));
         }
@@ -875,6 +884,9 @@ impl Desktop {
         self.aim_projection = None;
         self.last_aim = None;
         self.next_frame = Instant::now();
+        self.last_present = None;
+        self.present_interval_ns = 0;
+        self.present_lateness_ns = 0;
         if let Some(audio) = &mut self.audio {
             audio.clear();
         }
@@ -1096,9 +1108,7 @@ impl Desktop {
         self.cheats
             .draw(&mut self.canvas, self.menu_skin.as_deref())?;
         self.replays.draw(&mut self.canvas)?;
-        self.canvas.present();
-        self.present_frames += 1;
-        self.present_ns += start.elapsed().as_nanos();
+        let draw_ns = start.elapsed().as_nanos();
         {
             if let Some(audio) = &mut self.audio {
                 // Bound latency after stalls; never allow an unlimited audio backlog.
@@ -1111,19 +1121,25 @@ impl Desktop {
                     audio.queue_audio(audio_samples.unwrap_or(&source.audio_buf))?;
                 }
             }
-            self.next_frame += FRAME_TIME;
             let now = Instant::now();
+            self.next_frame = crate::frame_pacing::next_deadline(self.next_frame, now, FRAME_TIME);
             if self.next_frame > now {
                 #[cfg(not(test))]
-                std::thread::sleep(self.next_frame - now);
+                crate::frame_pacing::wait_until(self.next_frame);
                 #[cfg(test)]
                 if !crate::REPLAY_TEST_FAST.with(std::cell::Cell::get) {
-                    std::thread::sleep(self.next_frame - now);
+                    crate::frame_pacing::wait_until(self.next_frame);
                 }
-            } else if now.duration_since(self.next_frame) > FRAME_TIME * 4 {
-                self.next_frame = now;
             }
         }
+        let present_start = Instant::now();
+        self.canvas.present();
+        let presented = Instant::now();
+        self.present_interval_ns = self.last_present.map_or(0, |last| presented.duration_since(last).as_nanos());
+        self.present_lateness_ns = present_start.saturating_duration_since(self.next_frame).as_nanos();
+        self.last_present = Some(presented);
+        self.present_frames += 1;
+        self.present_ns += draw_ns + presented.duration_since(present_start).as_nanos();
         self.fps_frames += 1;
         let elapsed = self.fps_started.elapsed();
         if elapsed >= Duration::from_millis(500) {
@@ -1132,6 +1148,9 @@ impl Desktop {
             self.fps_started = Instant::now();
         }
         Ok(())
+    }
+    pub fn presentation_timing(&self) -> (u128,u128) {
+        (self.present_interval_ns,self.present_lateness_ns)
     }
 }
 

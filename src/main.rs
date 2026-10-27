@@ -63,7 +63,9 @@ mod save;
 mod scene_replay;
 mod session;
 mod viewport;
-const FRAME_PROFILE_HEADER: &str = "frame,total_ns,native_ns,render_ns,audio_ns,accepted_scenes,audio_samples,fifo_underruns_a,fifo_underruns_b,fifo_refills_a,fifo_refills_b,queued_audio_bytes,audio_underruns";
+#[cfg(feature = "desktop")]
+mod frame_pacing;
+const FRAME_PROFILE_HEADER: &str = "frame,total_ns,native_ns,render_ns,audio_ns,accepted_scenes,audio_samples,fifo_underruns_a,fifo_underruns_b,fifo_refills_a,fifo_refills_b,queued_audio_bytes,audio_underruns,present_interval_ns,present_lateness_ns";
 type BlockFn = extern "C" fn(*const RtApi, *mut c_void) -> u32;
 #[derive(Default)]
 struct Counters {
@@ -222,7 +224,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     run_with_args(std::env::args().skip(1).collect())
 }
 fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let polyphonic = if let Some(index) = args.iter().position(|s| s == "--polyphonic-audio") {
+    let no_polyphonic = if let Some(index) = args.iter().position(|s| s == "--no-polyphonic-audio") {
+        args.remove(index);
+        true
+    } else { false };
+    let polyphonic_requested = if let Some(index) = args.iter().position(|s| s == "--polyphonic-audio") {
         args.remove(index);
         true
     } else {
@@ -529,6 +535,14 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     } else {
         false
     };
+    let mut capture_profile = if let Some(index) = args.iter().position(|s| s == "--capture-profile") {
+        use std::io::Write;
+        let path = args.get(index + 1).ok_or("--capture-profile requires NEW_CSV")?.clone();
+        args.drain(index..=index+1);
+        let mut file = std::io::BufWriter::new(fs::File::create_new(path)?);
+        writeln!(file,"frame,native_ns,capture_ns,capture_calls,validate_total_ns,graphics_total_ns,geometry_total_ns,compose_total_ns,flat_faces,textured64_faces,textured128_faces")?;
+        Some(file)
+    } else { None };
     let mut frame_profile = if let Some(index) = args.iter().position(|s| s == "--frame-profile") {
         let path = args
             .get(index + 1)
@@ -635,6 +649,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         );
     }
     let mode = args[4].as_str();
+    let polyphonic = !no_polyphonic && (polyphonic_requested || mode == "play" && enhanced_sound);
     if (offline_play.is_some() || offline_record.is_some())
         && (mode != "multi" || force_interpreter)
     {
@@ -909,7 +924,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
             return Err("Polyphonic audio requires --enhanced-audio".into());
         }
         m.bus.pcm_overlay = Some(Default::default());
-        eprintln!("Audio: experimental simultaneous PCM effects enabled");
+        eprintln!("Audio: simultaneous PCM effects enabled");
     }
     if enhanced_sound {
         eprintln!(
@@ -1165,7 +1180,8 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 drop_start,
             )?);
         }
-        let profile_start = frame_profile.as_ref().map(|_| std::time::Instant::now());
+        let profile_start = (frame_profile.is_some() || capture_profile.is_some()).then(std::time::Instant::now);
+        let (mut capture_ns, mut capture_calls) = (0u128, 0u64);
         mouse_aim::set(&m.bus, None);
         let before = m.bus.frames;
         while camera_changes
@@ -1529,7 +1545,16 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                 }
                 if let Some(preview) = camera_preview.as_mut() {
                     if preview.interested(key) {
+                        let start = capture_profile.as_ref().map(|_| std::time::Instant::now());
                         preview.observe(&m, key);
+                        if let Some(start) = start {
+                            let elapsed = start.elapsed().as_nanos();
+                            capture_ns += elapsed;
+                            capture_calls += 1;
+                            if elapsed > 10_000_000 {
+                                eprintln!("capture_slow frame={} key={key:08x} ns={elapsed}", m.bus.frames);
+                            }
+                        }
                     }
                 }
                 if let Some(replay) = scene_replay.as_mut() {
@@ -1716,9 +1741,18 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
             let (queued, underruns) = desktop.as_mut().map_or((0, 0), |ui| ui.audio_health());
             #[cfg(not(feature = "desktop"))]
             let (queued, underruns) = (0, 0);
-            writeln!(file,"{},{},{profile_native_ns},{profile_render_ns},{profile_audio_ns},{},{},{},{},{},{},{queued},{underruns}",
+            #[cfg(feature = "desktop")]
+            let (interval, lateness) = desktop.as_ref().map_or((0,0), |ui| ui.presentation_timing());
+            #[cfg(not(feature = "desktop"))]
+            let (interval, lateness) = (0,0);
+            writeln!(file,"{},{},{profile_native_ns},{profile_render_ns},{profile_audio_ns},{},{},{},{},{},{},{queued},{underruns},{interval},{lateness}",
                 m.bus.frames,profile_start.unwrap().elapsed().as_nanos(), camera_preview.as_ref().map_or(0, |p| p.accepted),
                 m.bus.audio_buf.len(),m.bus.fifo_underruns[0],m.bus.fifo_underruns[1],m.bus.fifo_refills[0],m.bus.fifo_refills[1])?;
+        }
+        if let Some(file) = capture_profile.as_mut() {
+            use std::io::Write;
+            let (times, faces) = camera_preview.as_ref().map_or(([0;4],[0;3]), |p| p.profile_counters());
+            writeln!(file,"{},{profile_native_ns},{capture_ns},{capture_calls},{},{},{},{},{},{},{}",m.bus.frames,times[0],times[1],times[2],times[3],faces[0],faces[1],faces[2])?;
         }
         if sound_probe.is_some() {
             audio_probe::frame(&m)?;

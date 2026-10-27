@@ -528,7 +528,7 @@ impl Language {
         })
     }
     pub fn install(&mut self, m: &mut Machine) {
-        m.bus.rom = std::mem::take(&mut self.rom);
+        m.bus.rom = std::mem::take(&mut self.rom).into();
     }
     pub fn observe(&mut self, m: &mut Machine, key: u32) {
         TRACE.with(|cell| {
@@ -637,7 +637,7 @@ pub fn change_live(
             set_word(&mut image, literal, pointer + delta);
         }
     }
-    next.rom = image;
+    next.rom = image.into_vec();
     let mut ranges = BTreeMap::new();
     let guest_slot = word(&m.bus.ewram, 0x35cc0).min(4) as usize;
     for pointers in entries(base).values() {

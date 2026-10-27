@@ -49,6 +49,7 @@ Do not include personal ROMs, saves or session recordings in a public archive.
 
 EXE OPTIONS
 --original-audio       original hardware audio
+--no-polyphonic-audio  disable simultaneous effects (enabled by default)
 --drop-lifetime 0      original item/corpse cleanup rules
 --record-session       enable diagnostic session recording (off by default)
 --rom "path to ROM"    use a file outside the game folder
