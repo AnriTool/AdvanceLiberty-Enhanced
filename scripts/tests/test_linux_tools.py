@@ -53,7 +53,7 @@ class LinuxTools(unittest.TestCase):
         return lib
 
     def test_play_records_diagnostic_sessions_only_with_opt_in(self):
-        args = argparse.Namespace(original_audio=False, drop_lifetime=30,
+        args = argparse.Namespace(original_audio=False, polyphonic_audio=True, drop_lifetime=30,
                                   original_renderer=False, frames=2,
                                   record_session=False, no_record=False)
         with patch.object(p, 'prepare', return_value=(self.rom, [])), patch.object(p, 'run') as runtime:
@@ -61,6 +61,7 @@ class LinuxTools(unittest.TestCase):
             command = runtime.call_args.args[0]
             self.assertNotIn('--record-session', command)
             self.assertIn('--replays', command)
+            self.assertIn('--polyphonic-audio', command)
             self.assertIn(self.root / 'replays', command)
             self.assertFalse((self.root / 'data/sessions').exists())
             args.record_session = True
@@ -69,6 +70,15 @@ class LinuxTools(unittest.TestCase):
             session = command[command.index('--record-session') + 1]
             self.assertEqual(session.parent, self.root / 'data/sessions')
             self.assertTrue(session.parent.is_dir())
+            args.polyphonic_audio = False
+            p.play(args)
+            self.assertIn('--no-polyphonic-audio', runtime.call_args.args[0])
+            self.assertNotIn('--polyphonic-audio', runtime.call_args.args[0])
+            args.original_audio = True
+            p.play(args)
+            self.assertNotIn('--enhanced-audio', runtime.call_args.args[0])
+            self.assertNotIn('--polyphonic-audio', runtime.call_args.args[0])
+            self.assertNotIn('--no-polyphonic-audio', runtime.call_args.args[0])
 
     def test_linux_profiles_are_separate_and_detect_stale_coverage(self):
         windows = (self.root / 'native/usa/manifest.json').read_bytes()

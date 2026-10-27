@@ -27,6 +27,19 @@ def check_tag(tag):
     return tag
 
 
+def check_lock_version():
+    expected = version()
+    # Cargo-generated lockfiles put name/version first in each package block.
+    # Avoid tomllib: Ubuntu 22.04's system Python is 3.10.
+    locked = re.findall(r'^\[\[package\]\]\s+name = "advance-liberty"\s+version = "([^"]+)"',
+                        (ROOT / 'Cargo.lock').read_text(), re.M)
+    if locked != [expected]:
+        actual = ', '.join(locked) or 'missing package'
+        raise ValueError(f'Cargo.lock has advance-liberty {actual}; Cargo.toml has {expected}. '
+                         'Run cargo update --offline --package advance-liberty and commit Cargo.lock '
+                         'together with Cargo.toml before building or tagging a release.')
+
+
 def assets(directory):
     prefix = 'AdvanceLiberty-Enhanced-' + version()
     archives = [directory / (prefix + '-win64.zip'), directory / (prefix + '-linux-x86_64.tar.gz')]
@@ -109,6 +122,7 @@ def main():
     args = parser.parse_args()
     tag = args.tag or os.environ.get('GITHUB_REF_NAME', '')
     if args.command == 'check-version':
+        check_lock_version()
         if os.environ.get('GITHUB_REF_TYPE') == 'tag' or args.tag is not None:
             check_tag(tag)
         print('Package version: ' + version())

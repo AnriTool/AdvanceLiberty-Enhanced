@@ -42,6 +42,17 @@ class Releases(unittest.TestCase):
             with self.assertRaises(ValueError):
                 r.check_tag(tag)
 
+    def test_lockfile_must_follow_package_version_bumps(self):
+        lock = self.root / 'Cargo.lock'
+        lock.write_text('version = 4\n\n[[package]]\nname = "advance-liberty"\nversion = "0.1.0-preview.2"\n')
+        r.check_lock_version()
+        lock.write_text(lock.read_text().replace('0.1.0-preview.2', '0.1.0-preview.1'))
+        with self.assertRaisesRegex(ValueError, r'Cargo.lock.*Cargo.toml.*cargo update'):
+            r.check_lock_version()
+        lock.write_text('version = 4\n')
+        with self.assertRaisesRegex(ValueError, 'missing package'):
+            r.check_lock_version()
+
     def test_requires_both_platforms_and_matching_checksums(self):
         self.assertEqual(len(r.assets(self.directory)), 4)
         (self.directory / 'AdvanceLiberty-Enhanced-0.1.0-preview.2-win64.zip').write_bytes(b'changed')

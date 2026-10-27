@@ -57,6 +57,12 @@ licenses/
 
 ## Подготовка архива разработчиком
 
+После изменения версии пакета в `Cargo.toml` выполните
+`cargo update --offline --package advance-liberty`, затем
+`python scripts/ci/release.py check-version`. Сохраните `Cargo.toml` и `Cargo.lock`
+одним коммитом до создания тега релиза. CI проверяет совпадение версий;
+сборки сохраняют `--locked`, чтобы не менять разрешённые зависимости автоматически.
+
 `./scripts/windows/package.ps1 -Offline` собирает release EXE и создаёт новую папку и ZIP
 `dist/AdvanceLiberty-Enhanced-VERSION-win64`. `-SkipBuild` использует готовый
 EXE, `-OutputDirectory PATH` выбирает новый путь. Существующая папка никогда

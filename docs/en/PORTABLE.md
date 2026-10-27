@@ -56,6 +56,12 @@ CLI remains available for replays and development tools.
 
 ## Packaging a release
 
+After changing the package version in `Cargo.toml`, run
+`cargo update --offline --package advance-liberty`, then
+`python scripts/ci/release.py check-version`. Commit `Cargo.toml` and `Cargo.lock`
+together before creating the release tag. CI validates their version agreement;
+builds keep `--locked` so they cannot silently alter the dependency resolution.
+
 `./scripts/windows/package.ps1 -Offline` builds the release EXE and creates a new folder and ZIP
 at `dist/AdvanceLiberty-Enhanced-VERSION-win64`. `-SkipBuild` uses an existing
 EXE; `-OutputDirectory PATH` selects a new location. Existing output folders
