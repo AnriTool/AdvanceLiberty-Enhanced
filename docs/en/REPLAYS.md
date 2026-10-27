@@ -13,9 +13,11 @@
 
 Replays live in `replays/replay-*/`, independently of saves and diagnostic
 sessions. No screenshot sequence or external video encoder is required. The
-renderer, camera, mouse aim and recorded language changes are reproduced through
+camera, mouse aim and recorded language changes are reproduced through
 the normal game runtime. Gameplay input and host menus are blocked during
-playback; F11 still toggles fullscreen. F8 no longer switches control profiles;
+playback; **F6 switches Enhanced/Original rendering** and F11 toggles fullscreen.
+Viewing starts with the current renderer, regardless of how the clip was recorded.
+Renderer changes during viewing do not modify the replay or the suspended live settings. F8 no longer switches control profiles;
 select Enhanced/Classic in Enhanced Options.
 
 A clip contains an initial CPU/device/memory snapshot, runtime ROM patches and

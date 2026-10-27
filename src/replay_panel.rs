@@ -43,7 +43,7 @@ impl Panel {
                 ) {
                     self.command = Some(Command::Stop);
                 }
-                return key != Keycode::F11;
+                return !matches!(key, Keycode::F6 | Keycode::F11);
             }
             if self.visible {
                 match key {
@@ -230,6 +230,7 @@ mod tests {
         }
         assert!(panel.event(&key(Keycode::F4, false), true));
         assert!(panel.command.is_none());
+        assert!(!panel.event(&key(Keycode::F6, false), true));
         assert!(!panel.event(&key(Keycode::F11, false), true));
     }
 }

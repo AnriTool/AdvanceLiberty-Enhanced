@@ -1184,13 +1184,16 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
                     })();
                     match prepared {
                         Ok((initial, clip, clip_language, preview)) => {
+                            let mut presentation = initial.settings;
+                            // Viewing uses the user's current renderer, independent of the clip.
+                            presentation.renderer = render_settings.renderer;
                             let state = replay::Live {
                                 machine: std::mem::replace(&mut m, initial.machine),
                                 audio: std::mem::replace(&mut enhanced_audio, initial.audio),
                                 drops: std::mem::replace(&mut drop_policy, initial.drops),
                                 language: std::mem::replace(&mut language, clip_language),
                                 preview: std::mem::replace(&mut camera_preview, preview),
-                                settings: std::mem::replace(&mut render_settings, initial.settings),
+                                settings: std::mem::replace(&mut render_settings, presentation),
                                 preserve_cash: std::mem::replace(
                                     &mut preserve_cash,
                                     initial.preserve_cash,
@@ -1244,7 +1247,9 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
             m.bus.keys = packet.keys;
             aim_angle = packet.aim;
             aim_presentation = packet.aim_presentation;
+            let renderer = render_settings.renderer;
             render_settings = packet.settings;
+            render_settings.renderer = renderer;
             camera_mode::set(&mut m.bus, packet.camera)?;
             for change in &packet.language {
                 let bytes = match change {
@@ -1829,9 +1834,22 @@ mod replay_runtime_tests {
         let mut saved = Vec::new();
         let mut saved_calls = 0;
         let mut end_frame = 0;
+        let mut viewer_switched = false;
+        let mut original_files = Vec::new();
+        let replay_root = root.join("replays");
         REPLAY_TEST_FAST.with(|fast| fast.set(true));
         REPLAY_TEST_DRIVER.with(|driver| {
             *driver.borrow_mut() = Some(Box::new(move |m, ui| {
+                let push = |key| {
+                    ui.push_test_event(Event::KeyDown {
+                        timestamp: 0,
+                        window_id: 0,
+                        keycode: Some(key),
+                        scancode: Scancode::from_keycode(key),
+                        keymod: Mod::NOMOD,
+                        repeat: false,
+                    })
+                };
                 let key = match phase.get() {
                     0 if m.bus.frames >= 1450
                         && control_context::detect(&m.bus) != control_context::Context::Menu =>
@@ -1844,10 +1862,47 @@ mod replay_runtime_tests {
                         saved = serde_json::to_vec(m).unwrap();
                         saved_calls = COUNTERS.with(|c| c.borrow().calls);
                         phase.set(2);
+                        push(Keycode::F6); // Select Original after recording, before viewing.
                         Some(Keycode::F3)
+                    }
+                    2 if ui.replays.playing => {
+                        if original_files.is_empty() {
+                            let entry = replay::list(&replay_root).unwrap().remove(0);
+                            original_files = ["initial.json", "input.json", "info.json"]
+                                .iter()
+                                .map(|name| {
+                                    (
+                                        entry.path.join(name),
+                                        fs::read(entry.path.join(name)).unwrap(),
+                                    )
+                                })
+                                .collect();
+                        }
+                        assert_eq!(
+                            ui.initial_render_settings().renderer,
+                            if viewer_switched {
+                                render_settings::Renderer::Enhanced
+                            } else {
+                                render_settings::Renderer::Original
+                            }
+                        );
+                        if !viewer_switched && m.bus.frames >= end_frame - 60 {
+                            viewer_switched = true;
+                            Some(Keycode::F6)
+                        } else {
+                            None
+                        }
                     }
                     2 if !ui.replays.playing && !ui.replays.recording => {
                         assert_eq!(m.bus.frames, end_frame);
+                        assert!(viewer_switched);
+                        for (path, bytes) in &original_files {
+                            assert_eq!(
+                                fs::read(path).unwrap(),
+                                *bytes,
+                                "viewing does not change replay files"
+                            );
+                        }
                         assert_eq!(
                             COUNTERS.with(|c| c.borrow().calls),
                             saved_calls,
