@@ -14,19 +14,27 @@ and do not replace Latest. Stable versions are marked Latest.
 
 ## Creating a release
 
-1. Set the intended version in `Cargo.toml`; update `Cargo.lock` if Cargo changes it.
+1. Set the intended version in `Cargo.toml`, run `cargo update --offline --package advance-liberty`, then `python scripts/ci/release.py check-version`.
 2. Commit and push the source, including workflow, scripts and native coverage.
-3. Create and push the matching tag. For version `0.1.0-preview.2`:
+3. Create and push the matching tag. For version `0.1.1`:
 
 ```sh
-git tag v0.1.0-preview.2
-git push origin v0.1.0-preview.2
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 Use a new version/tag for another published build. Do not move an existing tag.
 The workflow creates the Release automatically; it does not require creating an
 empty release in the GitHub UI beforehand. To test without publishing, run
 **Actions → Build and release → Run workflow** on a branch.
+
+## Application icon
+
+The source is `resources/icon.png`, a square 1024×1024 PNG. After replacing it,
+run `python tools/prepare-icon.py` with Pillow installed. Commit the PNG and the
+generated `icon.ico` and `icon.rgba` together. Normal builds and CI use these
+committed files and do not need Pillow. Windows embeds the icon and package
+version in the EXE; SDL uses the same icon for the window on both platforms.
 
 ## Published assets
 

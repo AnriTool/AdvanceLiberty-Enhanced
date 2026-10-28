@@ -109,7 +109,6 @@ pub struct Desktop {
     title_updated: Instant,
     title_initialized: bool,
     notice: &'static str,
-    preview_status: &'static str,
     render_settings: crate::render_settings::Settings,
     renderer_available: bool,
     present_frames: u64,
@@ -195,7 +194,7 @@ impl Desktop {
             }
         };
         sdl2::hint::set("SDL_RENDER_SCALE_QUALITY", "0");
-        let window = sdl
+        let mut window = sdl
             .video()?
             .window(
                 "AdvanceLiberty: Enhanced | Native dispatch: -- | interpreted: 0 | FPS: --",
@@ -210,6 +209,11 @@ impl Desktop {
             .resizable()
             .build()
             .map_err(|e| e.to_string())?;
+        let mut icon_pixels = include_bytes!("../resources/icon.rgba").to_vec();
+        let icon = sdl2::surface::Surface::from_data(
+            &mut icon_pixels, 256, 256, 256 * 4, PixelFormatEnum::RGBA32,
+        )?;
+        window.set_icon(&icon);
         let mut canvas = window.into_canvas().build().map_err(|e| e.to_string())?;
         canvas
             .set_logical_size(240, 160)
@@ -245,7 +249,6 @@ impl Desktop {
             title_updated: Instant::now(),
             title_initialized: false,
             notice: "",
-            preview_status: "",
             render_settings: preferences.render,
             language: preferences.language,
             language_change: None,
@@ -438,10 +441,6 @@ impl Desktop {
             Some(fps) if !self.paused() => format!(" | FPS: {fps:.1}"),
             _ => " | FPS: --".to_owned(),
         });
-        if !self.preview_status.is_empty() {
-            title.push_str(" | ");
-            title.push_str(self.preview_status);
-        }
         self.canvas
             .window_mut()
             .set_title(&title)
@@ -1010,9 +1009,6 @@ impl Desktop {
 
     pub fn audio_health(&mut self) -> (u32, u64) {
         self.audio.as_mut().map_or((0, 0), |audio| audio.health())
-    }
-    pub fn set_preview_status(&mut self, status: &'static str) {
-        self.preview_status = status;
     }
     pub fn set_render_settings(
         &mut self,
@@ -2228,7 +2224,6 @@ mod tests {
         ui.fps_frames = 58;
         ui.present(&source, None, &mut textures).unwrap();
         assert!((40.0..70.0).contains(&ui.fps.unwrap()));
-        ui.set_preview_status("Camera preview");
         ui.final_status(
             crate::coverage::Coverage {
                 native_dispatches: 9999,
@@ -2239,8 +2234,7 @@ mod tests {
         .unwrap();
         assert!(ui.title().contains("interpreted: 1"));
         assert!(ui.title().contains("FPS: "));
-        assert!(ui.title().contains("Camera preview"));
-        for removed in ["F6", "F11", "Textures:", "Renderer:"] {
+        for removed in ["Camera preview", "F6", "F11", "Textures:", "Renderer:"] {
             assert!(!ui.title().contains(removed));
         }
         ui.paused = true;

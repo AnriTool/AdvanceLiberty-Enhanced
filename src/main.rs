@@ -1693,7 +1693,6 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
         }
         #[cfg(feature = "desktop")]
         if let Some(ui) = desktop.as_mut() {
-            ui.set_preview_status(camera_preview.as_ref().map(|p| p.status()).unwrap_or(""));
             ui.set_render_settings(render_settings, preview_enabled);
             if let Some(capture) = &capture {
                 capture.menu(m.bus.frames, ui)?;

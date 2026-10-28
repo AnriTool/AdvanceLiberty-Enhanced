@@ -927,9 +927,6 @@ impl Preview {
             }
         }
     }
-    pub fn status(&self) -> &'static str {
-        self.status
-    }
     pub fn profile_counters(&self) -> ([u128; 4], [usize; 3]) {
         ([self.validate_ns, self.graphics_ns, self.geometry_ns, self.compose_ns],
             self.current.as_ref().map_or([0; 3], |s| s.materials.face_counts()))
