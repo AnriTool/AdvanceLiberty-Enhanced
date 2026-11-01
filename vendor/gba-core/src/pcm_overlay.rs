@@ -1,9 +1,18 @@
 //! Observation-only PCM sidecar. Samples follow the same DMA/FIFO clock as the
 //! canonical bytes; they never enter guest memory or the hardware audio mix.
 use std::collections::{BTreeMap, VecDeque};
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct PcmVoice {
+    pub sample: u32,
+    pub position: u32,
+    pub length: u32,
+    pub volume: u16,
+}
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PcmOverlay {
     pub memory: BTreeMap<u32, f32>,
+    #[serde(default)]
+    pub voices: Vec<PcmVoice>,
     pending: [VecDeque<f32>; 2],
     held: [f32; 2],
     pub tap: [Vec<(f32, u32)>; 2],
@@ -35,6 +44,15 @@ mod tests {
 impl PcmOverlay {
     pub fn valid_snapshot(&self, depths: [usize; 2]) -> bool {
         self.source.is_none()
+            && self.voices.len() <= 16
+            && self.voices.iter().all(|v| {
+                (0x08000010..0x09000000).contains(&v.sample)
+                    && v.length > 0
+                    && v.length <= 0x100000
+                    && v.sample as u64 + v.length as u64 <= 0x09000000
+                    && v.position <= v.length
+                    && v.volume <= 256
+            })
             && self.memory.len() <= 1024
             && self
                 .memory

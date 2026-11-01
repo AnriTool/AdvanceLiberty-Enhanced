@@ -1068,6 +1068,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
     let mut api = RtApi {
         guard,
         interp_one: interp,
+        read8: polyphonic_audio::read8,
         read16: mouse_aim::read16,
         read32: polyphonic_audio::read32,
         ..RT_API
@@ -1087,6 +1088,7 @@ fn run_with_args(mut args: Vec<String>) -> Result<(), Box<dyn std::error::Error>
             return Err("Sound probe requires native multi mode without camera write tracing".into());
         }
         audio_probe::open(path)?;
+        api.read8 = audio_probe::read8;
         api.write8 = audio_probe::write8;
         api.write16 = audio_probe::write16;
         api.write32 = audio_probe::write32;

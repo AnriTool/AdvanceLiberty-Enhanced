@@ -50,6 +50,15 @@ with independent pitch are mapped to the selected voice's timer grid. The origin
 head is excluded. Volume and voice allocation/lifetime still come from the game;
 this does not expand the guest pool or revive discarded sounds.
 
+Some player weapon sounds are rejected by a higher-level game check while a
+competing vehicle sound is active, before a PCM voice is allocated. Enhanced
+simultaneous effects also observes those rejected player requests and supplies
+their raw PCM through the host sidecar. It preserves the guest check and return
+value, follows the game's SFX attenuation table, and avoids duplicating samples
+already audible through the original heads. Repeated requests retrigger one
+host voice per sample; NPCs are not added at the player's loudness. These bounded
+voices are saved/restored with gameplay replays. Original Audio is unchanged.
+
 Only one copy of each PCM sample is audible through the sidecar. Samples already
 selected by any original channel are excluded, and repeated queued copies are
 deduplicated across both effect groups. This avoids stacking successive skid or
@@ -69,3 +78,9 @@ For driver research the native `multi` worker accepts `--sound-probe NEW_DIRECTO
 region and `driver.bin`: repeated records of a little-endian u64 frame number
 followed by bytes from EWRAM `0x02027330..0x02027f00`. These are observations only;
 ordinary launches do not create these files.
+
+The probe also writes `requests.csv` for one-shot/loop allocation requests and
+the high-level weapon rejection check, including caller, actor and returned
+read value. A rejected high-level request may have no allocation in `writes.csv`.
+When the driver relocates its IWRAM buffers, obsolete shadow addresses are
+discarded; queued FIFO values remain intact and snapshots stay bounded.
