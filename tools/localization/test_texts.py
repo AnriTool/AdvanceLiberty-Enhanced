@@ -62,6 +62,29 @@ class Tables(unittest.TestCase):
 
 
 class Packs(unittest.TestCase):
+    def test_small_font_variants_copy_validate_and_allow_base_fallback(self):
+        for key in texts.FONT_VARIANTS:
+            variant = copy.deepcopy(self.pack['font'])
+            variant.pop('aliases', None)
+            self.pack[key] = variant
+        upgraded = texts.upgrade_pack(self.pack)
+        self.assertEqual(upgraded['dialogue_font'], self.pack['dialogue_font'])
+        created = texts.new_pack(self.catalog, 'ru', 'Russian', font_source=self.pack)
+        for key in texts.FONT_VARIANTS:
+            self.assertEqual(created[key], self.pack[key])
+            bad = copy.deepcopy(self.pack)
+            bad[key]['glyphs'] = {}
+            with self.assertRaisesRegex(texts.TextError, key):
+                texts.upgrade_pack(bad)
+            bad = copy.deepcopy(self.pack)
+            bad[key]['aliases'] = {'а': 'А'}
+            with self.assertRaisesRegex(texts.TextError, key):
+                texts.upgrade_pack(bad)
+        # A replacement donor without overrides restores the base fallback.
+        replaced = texts.upgrade_pack(self.pack, texts.legacy_font())
+        self.assertTrue(all(key not in replaced for key in texts.FONT_VARIANTS))
+        self.assertTrue(texts.validate_pack(self.catalog, replaced)['runtime_supported'])
+
     def test_menu_translations_templates_and_old_packs(self):
         pack=copy.deepcopy(self.pack)
         pack['menu']={'quit_to_menu':'В меню','save_failed':'Ошибка: {error}'}

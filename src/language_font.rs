@@ -232,6 +232,32 @@ pub struct Font {
     characters: BTreeMap<char, usize>,
     codes: Vec<u8>,
 }
+
+/// Optional drawings for each small-text renderer. All slots use the base
+/// font's alphabet/encoding; omitted drawings fall back directly to that font.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct FontVariants {
+    pub antialiased: Option<Font>,
+    pub plain: Option<Font>,
+    pub dialogue: Option<Font>,
+    pub cutscene: Option<Font>,
+}
+
+pub fn compile_variant(
+    alphabet: &str,
+    name: &str,
+    definition: Option<Definition>,
+) -> Result<Option<Font>, String> {
+    let Some(definition) = definition else {
+        return Ok(None);
+    };
+    if !definition.aliases.is_empty() {
+        return Err(format!("{name}: define shared aliases in font.aliases"));
+    }
+    Font::compile(alphabet, Some(definition))
+        .map(Some)
+        .map_err(|error| format!("{name}: {error}"))
+}
 impl Default for Font {
     fn default() -> Self {
         Self {

@@ -176,6 +176,31 @@ def legacy_font():
     return load_json(Path(__file__).resolve().parents[2] / 'resources/legacy-language-v1-font.json')
 
 
+FONT_VARIANTS = ('antialiased_font', 'plain_font', 'dialogue_font', 'cutscene_font')
+
+
+def copy_fonts(result, font_source):
+    result['alphabet'] = copy.deepcopy(font_source.get('alphabet', ''))
+    result['font'] = copy.deepcopy(font_source.get('font'))
+    for key in ('color_font', *FONT_VARIANTS):
+        if key in font_source:
+            result[key] = copy.deepcopy(font_source[key])
+        else:
+            result.pop(key, None)
+
+
+def validate_font_variants(pack):
+    for key in FONT_VARIANTS:
+        font = pack.get(key)
+        if font is not None:
+            try:
+                validate_font(pack.get('alphabet', ''), font)
+                if font.get('aliases'):
+                    raise TextError('Define shared aliases in font.aliases')
+            except TextError as error:
+                raise TextError(f'{key}: {error}') from error
+
+
 def upgrade_pack(pack, font_source=None):
     if not isinstance(pack, dict):
         raise TextError('Expected a language pack object')
@@ -190,13 +215,8 @@ def upgrade_pack(pack, font_source=None):
         result['version'] = PACK_VERSION
         result.update(copy.deepcopy(legacy_font()))
     if font_source is not None:
-        result['alphabet'] = copy.deepcopy(font_source.get('alphabet', ''))
-        result['font'] = copy.deepcopy(font_source.get('font'))
-        if 'color_font' in font_source:
-            result['color_font']=copy.deepcopy(font_source['color_font'])
-        else:
-            result.pop('color_font',None)
-    allowed = {'version','language','name','fallback','alphabet','font','color_font','entries','menu','source_rom_sha256','source_slot'}
+        copy_fonts(result, font_source)
+    allowed = {'version','language','name','fallback','alphabet','font','color_font','entries','menu','source_rom_sha256','source_slot', *FONT_VARIANTS}
     if set(result)-allowed:
         raise TextError('Unknown pack fields: ' + ', '.join(sorted(set(result)-allowed)))
     if not isinstance(result.get('language'),str) or not re.fullmatch(r'[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*',result['language']):
@@ -205,6 +225,7 @@ def upgrade_pack(pack, font_source=None):
         raise TextError('Pack requires a name, entries and English fallback')
     validate_font(result.get('alphabet',''),result.get('font'))
     validate_color_font(result.get('alphabet',''),result.get('color_font'))
+    validate_font_variants(result)
     return result
 
 
@@ -276,10 +297,10 @@ def new_pack(catalog, language, name, source_language=None, font_source=None):
                   entries={key: entry['texts'][source_language] if source_language else '' for key, entry in entries.items()},
                   menu={key: value if source_language=='en' else '' for key,value in MENU_TEXTS.items()})
     if font_source is not None:
-        result.update(alphabet=copy.deepcopy(font_source.get('alphabet','')),font=copy.deepcopy(font_source.get('font')))
-        if 'color_font' in font_source:result['color_font']=copy.deepcopy(font_source['color_font'])
+        copy_fonts(result, font_source)
     validate_font(result['alphabet'],result.get('font'))
     validate_color_font(result['alphabet'],result.get('color_font'))
+    validate_font_variants(result)
     return result
 
 

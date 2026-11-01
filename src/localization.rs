@@ -1,5 +1,5 @@
 //! Opt-in external text data for the verified USA image. No guest code patches.
-use crate::language_font::{ColorDefinition, ColorFont};
+use crate::language_font::{compile_variant, ColorDefinition, ColorFont, FontVariants};
 pub use crate::language_font::{Definition as FontDefinition, Font};
 use gba_core::Machine;
 use serde::Deserialize;
@@ -214,6 +214,14 @@ struct PackV2 {
     font: Option<FontDefinition>,
     #[serde(default)]
     color_font: Option<ColorDefinition>,
+    #[serde(default)]
+    antialiased_font: Option<FontDefinition>,
+    #[serde(default)]
+    plain_font: Option<FontDefinition>,
+    #[serde(default)]
+    dialogue_font: Option<FontDefinition>,
+    #[serde(default)]
+    cutscene_font: Option<FontDefinition>,
     #[serde(deserialize_with = "crate::language_font::unique_map")]
     entries: BTreeMap<String, String>,
     #[serde(default, deserialize_with = "crate::language_font::unique_map")]
@@ -241,6 +249,7 @@ struct Pack {
     entries: BTreeMap<String, String>,
     font: Font,
     color_font: ColorFont,
+    font_variants: FontVariants,
     menu: BTreeMap<String, String>,
 }
 fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
@@ -254,6 +263,16 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
         let _provenance = (&pack.source_rom_sha256, &pack.source_slot);
         let font = Font::compile(&pack.alphabet, pack.font)?;
         let color_font = ColorFont::compile(&pack.alphabet, &font, pack.color_font)?;
+        let font_variants = FontVariants {
+            antialiased: compile_variant(
+                &pack.alphabet,
+                "antialiased_font",
+                pack.antialiased_font,
+            )?,
+            plain: compile_variant(&pack.alphabet, "plain_font", pack.plain_font)?,
+            dialogue: compile_variant(&pack.alphabet, "dialogue_font", pack.dialogue_font)?,
+            cutscene: compile_variant(&pack.alphabet, "cutscene_font", pack.cutscene_font)?,
+        };
         Ok(Pack {
             language: pack.language,
             name: pack.name,
@@ -261,6 +280,7 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
             entries: pack.entries,
             font,
             color_font,
+            font_variants,
             menu: pack.menu,
         })
     } else {
@@ -281,6 +301,7 @@ fn parse_pack(bytes: &[u8]) -> Result<Pack, Box<dyn std::error::Error>> {
             entries: pack.entries,
             font,
             color_font,
+            font_variants: FontVariants::default(),
             menu: BTreeMap::new(),
         })
     }
@@ -414,6 +435,8 @@ pub struct Language {
     pub glyph_calls: u64,
     pub font: Font,
     color_font: ColorFont,
+    #[serde(default)]
+    font_variants: FontVariants,
     pub menu: BTreeMap<String, String>,
     pub(crate) menu_font: Font,
     pub(crate) menu_color_font: ColorFont,
@@ -508,7 +531,12 @@ impl Language {
             }
         }
         if extended {
-            install_fonts(&mut image, &pack.font, &pack.color_font);
+            install_fonts(
+                &mut image,
+                &pack.font,
+                &pack.color_font,
+                &pack.font_variants,
+            );
         }
         if image.len() > 32 * 1024 * 1024 {
             return Err("Text arena exceeds cartridge address space".into());
@@ -523,6 +551,7 @@ impl Language {
             menu_color_font: pack.color_font.clone(),
             font: pack.font,
             color_font: pack.color_font,
+            font_variants: pack.font_variants,
             menu: pack.menu,
             rom: image,
         })
@@ -580,8 +609,14 @@ pub fn change_live(
         if let Some(old) = current.as_ref().filter(|old| old.extended) {
             next.font = old.font.clone();
             next.color_font = old.color_font.clone();
+            next.font_variants = old.font_variants.clone();
             next.extended = true;
-            install_fonts(&mut next.rom, &next.font, &next.color_font);
+            install_fonts(
+                &mut next.rom,
+                &next.font,
+                &next.color_font,
+                &next.font_variants,
+            );
         }
     }
     if original {
@@ -737,20 +772,40 @@ pub fn changes(path: &Path) -> Result<Vec<(u64, Option<Vec<u8>>)>, Box<dyn std::
 // Preserve 88 tiles per font view, including adjacent reserved/icon tiles,
 // and append package-owned tiles. The dialogue font has its own
 // colour-remapping path, separate from the antialiased and plain UI fonts.
-fn install_fonts(rom: &mut Vec<u8>, custom: &Font, color: &ColorFont) {
+fn install_fonts(rom: &mut Vec<u8>, custom: &Font, color: &ColorFont, variants: &FontVariants) {
     while rom.len() % 4 != 0 {
         rom.push(0);
     }
-    for (source, literals, ink) in [
-        (0x346478, &[0x2add8][..], 13u8),
-        (0x346f78, &[0x4b74, 0x4f3c, 0x601c][..], 3u8),
+    for (source, literals, ink, drawing) in [
+        (
+            0x346478,
+            &[0x2add8][..],
+            13u8,
+            variants.antialiased.as_ref().unwrap_or(custom),
+        ),
+        (
+            0x346f78,
+            &[0x4b74, 0x4f3c, 0x601c][..],
+            3u8,
+            variants.plain.as_ref().unwrap_or(custom),
+        ),
         // Dialogue compositor recolours nibble 3 to the message colour.
-        (0x3478d8, &[0x2e520][..], 3u8),
-        (0x346d78, &[0x2e4f0][..], 3u8),
+        (
+            0x3478d8,
+            &[0x2e520][..],
+            3u8,
+            variants.dialogue.as_ref().unwrap_or(custom),
+        ),
+        (
+            0x346d78,
+            &[0x2e4f0][..],
+            3u8,
+            variants.dialogue.as_ref().unwrap_or(custom),
+        ),
     ] {
         let mut font = rom[source..source + FONT_GLYPHS * 32].to_vec();
-        for index in 0..custom.len() {
-            font.extend_from_slice(&custom.tile(index, ink));
+        for index in 0..drawing.len() {
+            font.extend_from_slice(&drawing.tile(index, ink));
         }
         let address = 0x08000000 + rom.len() as u32;
         rom.extend_from_slice(&font);
@@ -759,7 +814,7 @@ fn install_fonts(rom: &mut Vec<u8>, custom: &Font, color: &ColorFont) {
             set_word(rom, literal, address);
         }
     }
-    install_cutscene_font(rom, custom);
+    install_cutscene_font(rom, variants.cutscene.as_ref().unwrap_or(custom));
     install_color_font(rom, custom, color);
 }
 
@@ -938,6 +993,140 @@ pub fn test_font() -> Font {
 mod tests {
     use super::*;
     #[test]
+    fn optional_font_variants_validate_shapes_and_share_base_encoding() {
+        let mut json = serde_json::json!({"version":2,"language":"el","name":"Greek",
+            "alphabet":"Ω","font":{"width":1,"height":1,"glyphs":{"Ω":["#"]},"aliases":{"ω":"Ω"}},"entries":{}});
+        let original = parse_pack(json.to_string().as_bytes()).unwrap();
+        assert!(original.font_variants.antialiased.is_none());
+        assert!(original.font_variants.plain.is_none());
+        assert!(original.font_variants.dialogue.is_none());
+        assert!(original.font_variants.cutscene.is_none());
+        for name in [
+            "antialiased_font",
+            "plain_font",
+            "dialogue_font",
+            "cutscene_font",
+        ] {
+            json[name] = serde_json::json!({"width":2,"height":1,"glyphs":{"Ω":[".#"]}});
+        }
+        let pack = parse_pack(json.to_string().as_bytes()).unwrap();
+        assert_eq!(pack.font.encode('ω'), pack.font.encode('Ω'));
+        for variant in [
+            &pack.font_variants.antialiased,
+            &pack.font_variants.plain,
+            &pack.font_variants.dialogue,
+            &pack.font_variants.cutscene,
+        ] {
+            let variant = variant.as_ref().unwrap();
+            assert_eq!(
+                variant.index(pack.font.encode('ω').unwrap() as u32),
+                Some(0)
+            );
+            assert_ne!(variant.tile(0, 3), pack.font.tile(0, 3));
+        }
+        for name in [
+            "antialiased_font",
+            "plain_font",
+            "dialogue_font",
+            "cutscene_font",
+        ] {
+            let mut invalid = json.clone();
+            invalid[name]["glyphs"] = serde_json::json!({});
+            assert!(parse_pack(invalid.to_string().as_bytes()).is_err());
+            invalid = json.clone();
+            invalid[name]["aliases"] = serde_json::json!({"ω":"Ω"});
+            assert!(parse_pack(invalid.to_string().as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the user's USA ROM"]
+    fn distinct_font_routes_fall_back_independently_and_survive_live_reset() {
+        let rom = fs::read(std::env::var_os("ADVANCE_LIBERTY_LANGUAGE_TEST_ROM").unwrap()).unwrap();
+        let drawing =
+            |row: &str| serde_json::json!({"width":row.len(),"height":1,"glyphs":{"Ω":[row]}});
+        let json = serde_json::json!({"version":2,"language":"el","name":"Greek","alphabet":"Ω",
+            "font":drawing("#"),"antialiased_font":drawing(".#"),
+            "dialogue_font":drawing("..#"),"cutscene_font":drawing("...#"),
+            "entries":{"text.00cc7f0c":"Ω Ω","ui.015b":"Ω"}});
+        let pack = parse_pack(json.to_string().as_bytes()).unwrap();
+        let mut machine = Machine::new(rom.clone());
+        let mut current = None;
+        change_live(
+            &mut machine,
+            &rom,
+            &mut current,
+            Some(json.to_string().into_bytes()),
+        )
+        .unwrap();
+        for reset in [false, true] {
+            if reset {
+                change_live(&mut machine, &rom, &mut current, None).unwrap();
+            }
+            for (literal, source, ink, drawing) in [
+                (
+                    0x2add8,
+                    0x346478,
+                    13,
+                    pack.font_variants.antialiased.as_ref().unwrap(),
+                ),
+                (0x4b74, 0x346f78, 3, &pack.font), // plain_font omitted: direct fallback
+                (
+                    0x2e520,
+                    0x3478d8,
+                    3,
+                    pack.font_variants.dialogue.as_ref().unwrap(),
+                ),
+                (
+                    0x2e4f0,
+                    0x346d78,
+                    3,
+                    pack.font_variants.dialogue.as_ref().unwrap(),
+                ),
+            ] {
+                let target = (word(&machine.bus.rom, literal) - 0x08000000) as usize;
+                assert_eq!(
+                    &machine.bus.rom[target..target + FONT_GLYPHS * 32],
+                    &rom[source..source + FONT_GLYPHS * 32]
+                );
+                assert_eq!(
+                    &machine.bus.rom[target + FONT_GLYPHS * 32..target + (FONT_GLYPHS + 1) * 32],
+                    drawing.tile(0, ink)
+                );
+            }
+            let atlas = (word(&machine.bus.rom, 0x642cc) - 0x08000000) as usize;
+            let widths = (word(&machine.bus.rom, 0x642d0) - 0x08000000) as usize;
+            let slot = crate::language_font::private_codes()[0] as usize - 32;
+            assert_eq!(
+                &machine.bus.rom[atlas + slot * 64..atlas + slot * 64 + 8],
+                &[0, 0, 0, 2, 0, 0, 0, 0]
+            );
+            assert_eq!(machine.bus.rom[widths + slot], 4);
+            let serialized = serde_json::to_value(current.as_ref().unwrap()).unwrap();
+            let restored: Language = serde_json::from_value(serialized.clone()).unwrap();
+            assert_eq!(
+                restored
+                    .font_variants
+                    .cutscene
+                    .as_ref()
+                    .unwrap()
+                    .glyph_width(),
+                4
+            );
+            let mut legacy_snapshot = serialized;
+            legacy_snapshot
+                .as_object_mut()
+                .unwrap()
+                .remove("font_variants");
+            assert!(serde_json::from_value::<Language>(legacy_snapshot)
+                .unwrap()
+                .font_variants
+                .cutscene
+                .is_none());
+        }
+    }
+
+    #[test]
     fn host_menu_schema_is_optional_and_duplicate_keys_are_rejected() {
         let original = br#"{"version":2,"language":"en","name":"English","entries":{}}"#;
         assert!(parse_pack(original).unwrap().menu.is_empty());
@@ -1007,8 +1196,14 @@ mod tests {
         let mut current = None;
         change_live(&mut machine, &rom, &mut current, Some(pack.clone())).unwrap();
         let first_len = machine.bus.rom.len();
-        assert_eq!(word(&machine.bus.ewram, 0x36308), word(&machine.bus.rom, 0x1f18) + 256);
-        assert_eq!(word(&machine.bus.ewram, 0x36314), word(&machine.bus.rom, 0x1f1c) + 7);
+        assert_eq!(
+            word(&machine.bus.ewram, 0x36308),
+            word(&machine.bus.rom, 0x1f18) + 256
+        );
+        assert_eq!(
+            word(&machine.bus.ewram, 0x36314),
+            word(&machine.bus.rom, 0x1f1c) + 7
+        );
         let pointer = word(&machine.bus.ewram, 0x2693c);
         assert_eq!(
             string(&machine.bus.rom, pointer),
@@ -1028,8 +1223,14 @@ mod tests {
         assert_eq!(machine.bus.clock, 1234567);
         assert_eq!(machine.bus.audio_buf, vec![17, -19]);
         change_live(&mut machine, &rom, &mut current, None).unwrap();
-        assert_eq!(word(&machine.bus.ewram, 0x36308), word(&machine.bus.rom, 0x1f18) + 256);
-        assert_eq!(word(&machine.bus.ewram, 0x36314), word(&machine.bus.rom, 0x1f1c) + 7);
+        assert_eq!(
+            word(&machine.bus.ewram, 0x36308),
+            word(&machine.bus.rom, 0x1f18) + 256
+        );
+        assert_eq!(
+            word(&machine.bus.ewram, 0x36314),
+            word(&machine.bus.rom, 0x1f1c) + 7
+        );
         assert_eq!(word(&machine.bus.ewram, 0x2693c), original);
         assert_eq!(
             word(&machine.bus.rom, UI_BANK + 0x15b * 4),
@@ -1078,7 +1279,7 @@ mod tests {
         for tile in &mut color.tiles {
             tile[0] = 15;
         }
-        install_fonts(&mut image, &font, &color);
+        install_fonts(&mut image, &font, &color, &FontVariants::default());
         let atlas = (word(&image, 0x642cc) - 0x08000000) as usize;
         let widths = (word(&image, 0x642d0) - 0x08000000) as usize;
         let color_atlas = (word(&image, 0x1770) - 0x08000000) as usize;
@@ -1112,7 +1313,8 @@ mod tests {
             if font.index(byte as u32).is_some() {
                 assert_eq!(image[color_atlas + slot * 256], 15);
                 assert_eq!(image[alt_atlas + slot * 256], 5);
-                let inactive: Vec<_> = image[color_atlas + slot * 256..color_atlas + (slot + 1) * 256]
+                let inactive: Vec<_> = image
+                    [color_atlas + slot * 256..color_atlas + (slot + 1) * 256]
                     .iter()
                     .map(|&shade| INACTIVE_COLOR_SHADES[shade as usize])
                     .collect();
@@ -1283,6 +1485,7 @@ mod tests {
             glyph_calls: 0,
             font: test_font(),
             color_font: ColorFont::generated(&test_font()),
+            font_variants: FontVariants::default(),
             menu: BTreeMap::new(),
             menu_font: test_font(),
             menu_color_font: ColorFont::generated(&test_font()),

@@ -79,7 +79,7 @@ Original Latin letters, accents, button icons and punctuation are preserved.
 Other characters, pixel glyphs and case mappings are defined by the JSON pack,
 without Rust changes or rebuilding. One pack can mix alphabets. Fonts are added
 to UI atlases and dialogue-window variants. Cutscenes have separate pixels and
-proportional widths; copies are generated from `font` while retaining original
+proportional widths; copies use `cutscene_font`, or `font` when omitted, retaining original
 Latin glyphs. The original character parser runs natively; its return handling
 is extended for private glyph codes. Original apostrophe, Spanish ¡ and other
 standard character bytes are not reused.
@@ -227,6 +227,31 @@ Another alphabet example is `tools/localization/examples/greek-symbols.json`.
 The language name in settings uses the same font; larger glyphs are fitted
 into a 5×7 cell for menus.
 
+### Separate small-text fonts
+
+`font` remains the fallback font. These optional fields override its drawings
+for individual game renderers:
+
+| Field | Used for |
+| --- | --- |
+| `antialiased_font` | Antialiased small-text atlas |
+| `plain_font` | Plain small UI text |
+| `dialogue_font` | Dialogue compositor and its alternate small-text view |
+| `cutscene_font` | Cutscene text and its proportional widths |
+
+Each field has the same `width`, `height`, `shadow` and `glyphs` format as `font`.
+All share `alphabet` and `font.aliases`; define aliases only in the base `font`.
+An omitted or null field falls back directly to `font`, independently of every
+other override. A supplied font must cover the entire alphabet; invalid drawings
+are rejected rather than silently replaced. The 8x8 cell and optional-shadow
+limits apply to each font separately. Original cartridge glyphs are preserved.
+
+`color_font` remains the separate 16x16 menu font. When omitted, its drawings are
+generated from `font`, as with existing packs. Packs remain version 2 and old
+packs need no changes. `new-pack --font-from` and `upgrade-pack --font-from` copy
+all supplied font variants; missing donor variants restore the base fallback.
+Live language changes and replay snapshots preserve the variants.
+
 ### Color font for menus and statistics
 
 Optional `color_font` supplies separate drawings for the original 16×16 color
@@ -330,8 +355,11 @@ and choose Save and return.
 
 Open [tools/font-editor.html](../../tools/font-editor.html) directly in a browser.
 Its interface, validation messages and tooltips are in English.
-It edits both `font` and `color_font`, including dimensions, shadow, aliases,
-palette indices and global/per-glyph advances. Import a complete v2 language pack,
+It edits `font`, its optional small-text variants and `color_font`, including
+dimensions, shadow, aliases, palette indices and global/per-glyph advances.
+Choose a small-text font and enable its Include checkbox to edit an independent
+variant. Uncheck Include to omit that variant and use `font` again.
+Import a complete v2 language pack,
 edit its pixel glyphs, then download the complete pack to preserve its translations.
 The font-only download is a transferable fragment, not a standalone game pack.
 Undo/redo, previews and a browser-local draft are included; no server or network
