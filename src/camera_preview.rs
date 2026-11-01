@@ -763,6 +763,14 @@ impl Preview {
             let mut reset = false;
             let geometry_start = std::time::Instant::now();
             let viewport = crate::viewport::View::new(3, settings.aspect);
+            let constrain = |view: [i32; 3]| {
+                let Some(world) = scene.ground_world.as_ref() else { return view; };
+                let zoom = scene.camera[2] as f64 / (scene.camera[2] as f64 + view[2] as f64);
+                let xy = world.camera_delta(&scene.graphics, viewport, [view[0], view[1]], zoom);
+                [xy[0], xy[1], view[2]]
+            };
+            let bounded = constrain([shift[0], shift[1], dz]);
+            shift = [bounded[0], bounded[1]];
             let layer = match self.building_layer.render(
                 &scene.materials,
                 scene.frame,
@@ -780,12 +788,12 @@ impl Preview {
                             ((self.presentation_floor - old.frame as f64) / span).clamp(0.0, 1.0);
                         let view = |a: f64| {
                             let xy = delta(old.camera, scene.camera, a);
-                            [
+                            constrain([
                                 xy[0],
                                 xy[1],
                                 ((old.camera[2] as f64 - scene.camera[2] as f64) * (1.0 - a))
                                     .round() as i32,
-                            ]
+                            ])
                         };
                         alpha = closest_supported_alpha(alpha, minimum, |a| {
                             scene.materials.supports_view(view(a), viewport)
@@ -794,7 +802,8 @@ impl Preview {
                         shift = [chosen[0], chosen[1]];
                         dz = chosen[2];
                     } else {
-                        shift = [0; 2];
+                        let bounded = constrain([0; 3]);
+                        shift = [bounded[0], bounded[1]];
                         dz = 0;
                         alpha = 1.0;
                     }

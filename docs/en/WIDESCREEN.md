@@ -41,6 +41,12 @@ independently: the last two maps are not square. Cell encoding is shared.
 Sampling uses the current snapshot's palette. ROM data is shared between
 snapshots through Arc; original game memory is unchanged.
 
+At an island boundary, the Enhanced camera stops before any viewport sample
+leaves that map. The limit uses the current aspect ratio and interpolated zoom;
+ground, buildings, sprites and mouse aiming share the same adjusted camera.
+Guest camera/physics and island transition triggers are unchanged. Terrain is
+not stretched, wrapped or invented beyond the map.
+
 ## Materials and sprites beyond the original screen
 
 The original pass may submit geometry without a clipped face's texture.

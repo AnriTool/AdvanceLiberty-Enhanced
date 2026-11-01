@@ -207,6 +207,43 @@ impl WorldGround {
         let index = self.index(x, y)?;
         (index != 0).then(|| half(&source.palette, index * 2) & 0x7fff)
     }
+
+    // Constrain the host camera, not individual terrain samples: buildings,
+    // objects, ground and aiming must all use the same view at island borders.
+    pub fn camera_delta(
+        &self,
+        source: &MemMap,
+        view: crate::viewport::View,
+        delta: [i32; 2],
+        zoom: f64,
+    ) -> [i32; 2] {
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return delta;
+        }
+        let [rx, ry, pa, pd] = continuous_parameters(source);
+        let xs = [view.source_x(0), view.source_x(view.width - 1)]
+            .map(|x| 120.0 + (x - 120.0) / zoom);
+        let ys = [0.0, (view.height - 1) as f64 / view.scale as f64]
+            .map(|y| 120.0 + (y - 120.0) / zoom);
+        let dimensions = [(1usize << self.shift) * 40, self.rows * 40];
+        std::array::from_fn(|axis| {
+            let (origin, step, positions) = if axis == 0 { (rx, pa, xs) } else { (ry, pd, ys) };
+            let edges = positions.map(|p| origin + step * p);
+            let low = edges[0].min(edges[1]);
+            let high = edges[0].max(edges[1]);
+            // Keep the last sampled coordinate strictly below the texture size.
+            // Convert to integer guest-world fractions conservatively so rounding
+            // cannot put the first/last column back outside the map.
+            let minimum = ((1.0 - low) / delta_reference(1)).ceil();
+            let maximum = ((dimensions[axis] as f64 * 256.0 - 1.0 - high)
+                / delta_reference(1)).floor();
+            if minimum <= maximum {
+                (delta[axis] as f64).clamp(minimum, maximum) as i32
+            } else {
+                delta[axis]
+            }
+        })
+    }
 }
 // Camera world units -> texture texels: 5/8. References carry 8 fractional bits.
 pub fn delta_reference(raw_delta: i32) -> f64 {
@@ -637,6 +674,66 @@ mod tests {
         println!("island_ground verified {checked} samples across {regions:?}");
     }
     use super::*;
+    #[test]
+    fn host_camera_stays_inside_each_island_at_all_view_edges_and_zoom_levels() {
+        for shift in [7, 8] {
+            let world = WorldGround {
+                rom: std::sync::Arc::new(Vec::new()),
+                map: 0, blocks: 0, atlas: 0, shift, rows: 256,
+            };
+            let mut source = MemMap::new(Vec::new());
+            for o in [0x68, 0x6c] {
+                source.iwram[o..o + 4].copy_from_slice(&120000i32.to_le_bytes());
+            }
+            let width = (1 << shift) * 64;
+            for (cx, cy) in [(50, 50), (width - 50, 50), (50, 16334), (width - 50, 16334), (2000, 8000)] {
+                source.iwram[0x14..0x18].copy_from_slice(&(cx * 65536i32).to_le_bytes());
+                source.iwram[0x18..0x1c].copy_from_slice(&(cy * 65536i32).to_le_bytes());
+                let original = source.iwram.clone();
+                for aspect in [crate::viewport::Aspect::Original, crate::viewport::Aspect::Wide] {
+                    let view = crate::viewport::View::new(3, aspect);
+                    for zoom in [0.85, 1.0, 1.15] {
+                        let requested = [32768, -16384];
+                        let delta = world.camera_delta(&source, view, requested, zoom);
+                        if cx == 2000 {
+                            assert_eq!(delta, requested, "interior camera must remain unchanged");
+                        }
+                        let [rx, ry, pa, pd] = continuous_parameters(&source);
+                        for (x, y) in [(0, 0), (view.width - 1, view.height - 1)] {
+                            let sx = 120.0 + (view.source_x(x) - 120.0) / zoom;
+                            let sy = 120.0 + (y as f64 / view.scale as f64 - 120.0) / zoom;
+                            let tx = (rx + delta_reference(delta[0]) + pa * sx) / 256.0;
+                            let ty = (ry + delta_reference(delta[1]) + pd * sy) / 256.0;
+                            assert!((0.0..(width as f64 * 0.625)).contains(&tx), "x={tx} camera={cx} zoom={zoom}");
+                            assert!((0.0..10240.0).contains(&ty), "y={ty} camera={cy} zoom={zoom}");
+                        }
+                    }
+                }
+                assert_eq!(source.iwram, original, "host clamping must not patch the guest");
+            }
+        }
+    }
+
+    #[test]
+    fn boundary_camera_is_stationary_while_guest_moves_inside_its_original_margin() {
+        let world = WorldGround {
+            rom: std::sync::Arc::new(Vec::new()),
+            map: 0, blocks: 0, atlas: 0, shift: 7, rows: 256,
+        };
+        let mut source = MemMap::new(Vec::new());
+        for o in [0x68, 0x6c] {
+            source.iwram[o..o + 4].copy_from_slice(&120000i32.to_le_bytes());
+        }
+        source.iwram[0x18..0x1c].copy_from_slice(&(8000 * 65536i32).to_le_bytes());
+        let view = crate::viewport::View::new(3, crate::viewport::Aspect::Wide);
+        let cameras: Vec<_> = [180, 200, 222].into_iter().map(|x| {
+            let raw = x * 65536i32;
+            source.iwram[0x14..0x18].copy_from_slice(&raw.to_le_bytes());
+            raw + world.camera_delta(&source, view, [0; 2], 1.0)[0]
+        }).collect();
+        assert!(cameras.windows(2).all(|p| p[0] == p[1]));
+    }
+
     #[test]
     fn moving_camera_uses_world_terrain_throughout_viewport_without_stale_cache() {
         let mut source = MemMap::new(Vec::new());
