@@ -56,8 +56,12 @@ git push origin v0.1.1
 сохраняет отдельные защищённые варианты RAM. Полученный C совпадает с обычной
 генерацией с проверкой по ROM для того же покрытия.
 
-Windows CI вызывает `scripts/windows/rebuild-native.ps1 -CoverageOnly`, Linux —
-`bash build.sh --native --coverage-only`. Созданные DLL/SO/C остаются в git-ignore.
+При промахе кэша Windows CI вызывает `scripts/windows/rebuild-native.ps1
+-CoverageOnly`, Linux — `bash rebuild-native.sh --skip-build --coverage-only`.
+Ключ кэша учитывает компиляторы, покрытие и входные файлы генератора.
+Упаковщики при каждом запуске проверяют контрольные суммы нативных библиотек.
+CI также кэширует результаты сборки Cargo и SDL. Созданные DLL/SO/C
+остаются в git-ignore.
 Упаковка исключает ROM, BIOS, извлечённые ресурсы, сохранения, записи и скрипты
 разработки. Игровой replay по-прежнему требует локальный ROM пользователя;
 он выполняется отдельно от модульных и синтетических проверок публичного CI.

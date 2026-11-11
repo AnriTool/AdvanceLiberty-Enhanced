@@ -55,8 +55,11 @@ assets or ROM secrets. It checks ROM snapshot overlaps for contradictions and
 retains separate guarded RAM variants. The generated C matches normal
 ROM-validated generation for the same coverage.
 
-Windows CI calls `scripts/windows/rebuild-native.ps1 -CoverageOnly`; Linux calls
-`bash build.sh --native --coverage-only`. Generated DLL/SO/C files remain ignored.
+On a native cache miss, Windows CI calls `scripts/windows/rebuild-native.ps1
+-CoverageOnly` and Linux calls `bash rebuild-native.sh --skip-build --coverage-only`.
+The cache key covers the compilers, coverage and generator inputs. The
+packagers verify native library checksums on every run. CI also caches Cargo
+and SDL build outputs. Generated DLL/SO/C files remain ignored.
 Packaging excludes ROMs, BIOS, extracted assets, saves, recordings and developer
 scripts. Gameplay replays still require a local user-supplied ROM and are separate
 from the ROM-free synthetic and unit checks performed in public CI.

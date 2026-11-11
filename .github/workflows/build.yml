@@ -15,14 +15,18 @@ jobs:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 3
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-2022
             platform: windows-x64
+            native-cache: artifacts/ci-native-windows
           - os: ubuntu-22.04
             platform: linux-x86_64
+            native-cache: native/linux-x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -40,6 +44,38 @@ jobs:
         with:
           msystem: MINGW64
           install: mingw-w64-x86_64-gcc
+      - name: Identify compilers for cache keys
+        id: compilers
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $rust = rustc -vV
+          if ($LASTEXITCODE) { throw 'Cannot identify rustc.' }
+          $cc = if ($env:RUNNER_OS -eq 'Windows') { Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe' } else { 'cc' }
+          $c = & $cc --version
+          if ($LASTEXITCODE) { throw 'Cannot identify C compiler.' }
+          foreach ($entry in @{ rust = $rust; c = $c }.GetEnumerator()) {
+            $bytes = [Text.Encoding]::UTF8.GetBytes($entry.Value -join "`n")
+            $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
+            "$($entry.Key)=$digest" >> $env:GITHUB_OUTPUT
+          }
+      - name: Cache Cargo and SDL build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps
+          key: desktop-cargo-v1-${{ matrix.os }}-${{ steps.compilers.outputs.rust }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+          restore-keys: desktop-cargo-v1-${{ matrix.os }}-${{ steps.compilers.outputs.rust }}-
+      - name: Cache compiled native profiles
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.native-cache }}
+          key: desktop-native-v1-${{ matrix.os }}-${{ steps.compilers.outputs.rust }}-${{ steps.compilers.outputs.c }}-${{ hashFiles('native/usa/coverage/**', 'native/usa/manifest.json', 'tools/aot/**', 'vendor/**', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/windows/rebuild-native.ps1', 'scripts/linux/project.py') }}
       - name: Build Windows runtime and tools
         if: runner.os == 'Windows'
         shell: pwsh
@@ -64,16 +100,29 @@ jobs:
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+          NATIVE_CACHE: ${{ matrix.native-cache }}
+          NATIVE_CACHE_HIT: ${{ steps.native-cache.outputs.cache-hit }}
         run: |
-          $gcc = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe'
-          ./scripts/windows/rebuild-native.ps1 -NativeProfile all -CoverageOnly -SkipBuild -Install -Gcc $gcc
+          if ($env:NATIVE_CACHE_HIT -eq 'true') {
+            Copy-Item -Path "$env:NATIVE_CACHE/*.dll" -Destination native/usa
+            Copy-Item -LiteralPath "$env:NATIVE_CACHE/manifest.json" -Destination native/usa/manifest.json
+          } else {
+            $gcc = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe'
+            ./scripts/windows/rebuild-native.ps1 -NativeProfile all -CoverageOnly -SkipBuild -Install -Gcc $gcc
+            New-Item -ItemType Directory -Force $env:NATIVE_CACHE | Out-Null
+            Copy-Item -Path native/usa/*.dll -Destination $env:NATIVE_CACHE
+            Copy-Item -LiteralPath native/usa/manifest.json -Destination $env:NATIVE_CACHE
+          }
           ./scripts/windows/package.ps1 -SkipBuild
       - name: Check Linux shell entry points
         if: runner.os == 'Linux'
         run: for script in ./*.sh scripts/linux/*.sh; do bash -n "$script"; done
-      - name: Build Linux runtime and native profiles without a ROM
+      - name: Build Linux runtime and tools
         if: runner.os == 'Linux'
-        run: bash ./build.sh --native --coverage-only
+        run: bash ./build.sh
+      - name: Build Linux native profiles without a ROM
+        if: runner.os == 'Linux' && steps.native-cache.outputs.cache-hit != 'true'
+        run: bash ./rebuild-native.sh --skip-build --coverage-only
       - name: Test Linux runtime, scripts and compiled instructions
         if: runner.os == 'Linux'
         run: bash ./test.sh --offline
