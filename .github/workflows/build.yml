@@ -23,27 +23,46 @@ jobs:
         include:
           - os: windows-2022
             platform: windows-x64
-            native-cache: artifacts/ci-native-windows
+            native-cache: artifacts/ci-native-windows-ucrt64
           - os: ubuntu-22.04
             platform: linux-x86_64
             native-cache: native/linux-x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Validate release version
         run: python scripts/ci/release.py check-version
       - name: Install Linux SDL build dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config python3 libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxinerama-dev libgl1-mesa-dev libudev-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
-      - name: Set up MinGW x64
+          # Bypass the runner's mirror list, which can stall on the Azure mirror.
+          sources=$(mktemp --suffix=.list)
+          trap 'rm -f "$sources"' EXIT
+          . /etc/os-release
+          cat > "$sources" <<EOF
+          deb https://archive.ubuntu.com/ubuntu $VERSION_CODENAME main universe
+          deb https://archive.ubuntu.com/ubuntu $VERSION_CODENAME-updates main universe
+          deb https://security.ubuntu.com/ubuntu $VERSION_CODENAME-security main universe
+          EOF
+          apt_options=(
+            -o "Dir::Etc::sourcelist=$sources"
+            -o Dir::Etc::sourceparts=-
+            -o Acquire::Retries=2
+            -o Acquire::https::Timeout=15
+          )
+          sudo apt-get "${apt_options[@]}" --error-on=any update
+          sudo apt-get "${apt_options[@]}" install -y \
+            build-essential cmake pkg-config python3 libasound2-dev libpulse-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev \
+            libxinerama-dev libgl1-mesa-dev libudev-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+      - name: Set up UCRT64 GCC
         if: runner.os == 'Windows'
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-gcc
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
       - name: Identify compilers for cache keys
         id: compilers
         shell: pwsh
@@ -52,7 +71,7 @@ jobs:
         run: |
           $rust = rustc -vV
           if ($LASTEXITCODE) { throw 'Cannot identify rustc.' }
-          $cc = if ($env:RUNNER_OS -eq 'Windows') { Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe' } else { 'cc' }
+          $cc = if ($env:RUNNER_OS -eq 'Windows') { Join-Path $env:MSYS2_LOCATION 'ucrt64/bin/gcc.exe' } else { 'cc' }
           $c = & $cc --version
           if ($LASTEXITCODE) { throw 'Cannot identify C compiler.' }
           foreach ($entry in @{ rust = $rust; c = $c }.GetEnumerator()) {
@@ -61,7 +80,7 @@ jobs:
             "$($entry.Key)=$digest" >> $env:GITHUB_OUTPUT
           }
       - name: Cache Cargo and SDL build outputs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -72,7 +91,7 @@ jobs:
           restore-keys: desktop-cargo-v1-${{ matrix.os }}-${{ steps.compilers.outputs.rust }}-
       - name: Cache compiled native profiles
         id: native-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ matrix.native-cache }}
           key: desktop-native-v1-${{ matrix.os }}-${{ steps.compilers.outputs.rust }}-${{ steps.compilers.outputs.c }}-${{ hashFiles('native/usa/coverage/**', 'native/usa/manifest.json', 'tools/aot/**', 'vendor/**', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/windows/rebuild-native.ps1', 'scripts/linux/project.py') }}
@@ -92,7 +111,7 @@ jobs:
           ./scripts/windows/test.ps1 -Offline
           python -m unittest discover -s scripts/tests -v
           if ($LASTEXITCODE) { throw 'Script tests failed.' }
-          $env:ADVANCE_AOT_TEST_GCC = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe'
+          $env:ADVANCE_AOT_TEST_GCC = Join-Path $env:MSYS2_LOCATION 'ucrt64/bin/gcc.exe'
           cargo test --release --locked --offline --package advance-aot-supplement compiled_pc_and_shift_operations_match_oracle -- --ignored
           if ($LASTEXITCODE) { throw 'Compiled-instruction tests failed.' }
       - name: Build Windows native profiles without a ROM and package
@@ -107,7 +126,7 @@ jobs:
             Copy-Item -Path "$env:NATIVE_CACHE/*.dll" -Destination native/usa
             Copy-Item -LiteralPath "$env:NATIVE_CACHE/manifest.json" -Destination native/usa/manifest.json
           } else {
-            $gcc = Join-Path $env:MSYS2_LOCATION 'mingw64/bin/gcc.exe'
+            $gcc = Join-Path $env:MSYS2_LOCATION 'ucrt64/bin/gcc.exe'
             ./scripts/windows/rebuild-native.ps1 -NativeProfile all -CoverageOnly -SkipBuild -Install -Gcc $gcc
             New-Item -ItemType Directory -Force $env:NATIVE_CACHE | Out-Null
             Copy-Item -Path native/usa/*.dll -Destination $env:NATIVE_CACHE
@@ -130,7 +149,7 @@ jobs:
         if: runner.os == 'Linux'
         run: bash ./package.sh --skip-build
       - name: Upload packaged builds
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: packages-${{ matrix.platform }}
           path: |
@@ -145,13 +164,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - name: Build web package without a ROM
         run: python3 web/build.py
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
       - name: Smoke test web package
@@ -170,7 +189,7 @@ jobs:
           assert.equal(core.frame(0x3ff, 0, 0, 0), 0);
           JS
       - name: Upload web package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: web-build
           path: dist/web/
@@ -184,9 +203,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Download both tested platform packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: packages-*
           merge-multiple: true
