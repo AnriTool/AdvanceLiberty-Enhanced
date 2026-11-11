@@ -40,22 +40,33 @@ jobs:
           sources=$(mktemp --suffix=.list)
           trap 'rm -f "$sources"' EXIT
           . /etc/os-release
-          cat > "$sources" <<EOF
-          deb https://archive.ubuntu.com/ubuntu $VERSION_CODENAME main universe
-          deb https://archive.ubuntu.com/ubuntu $VERSION_CODENAME-updates main universe
-          deb https://security.ubuntu.com/ubuntu $VERSION_CODENAME-security main universe
-          EOF
           apt_options=(
             -o "Dir::Etc::sourcelist=$sources"
             -o Dir::Etc::sourceparts=-
-            -o Acquire::Retries=2
+            -o Acquire::Retries=1
             -o Acquire::https::Timeout=15
           )
-          sudo apt-get "${apt_options[@]}" --error-on=any update
-          sudo apt-get "${apt_options[@]}" install -y \
-            build-essential cmake pkg-config python3 libasound2-dev libpulse-dev \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev \
+          packages=(
+            build-essential cmake pkg-config python3 libasound2-dev libpulse-dev
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev
             libxinerama-dev libgl1-mesa-dev libudev-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+          )
+          fetch_packages() {
+            local archive=$1 security=$2
+            cat > "$sources" <<EOF
+          deb $archive $VERSION_CODENAME main universe
+          deb $archive $VERSION_CODENAME-updates main universe
+          deb $security $VERSION_CODENAME-security main universe
+          EOF
+            sudo apt-get "${apt_options[@]}" --error-on=any update &&
+              sudo apt-get "${apt_options[@]}" install -y --download-only "${packages[@]}"
+          }
+          if ! fetch_packages https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu; then
+            echo '::warning::Could not fetch SDL dependencies from Ubuntu; trying the Kernel.org mirror.'
+            mirror=https://mirrors.edge.kernel.org/ubuntu
+            fetch_packages "$mirror" "$mirror"
+          fi
+          sudo apt-get "${apt_options[@]}" install -y --no-download "${packages[@]}"
       - name: Set up UCRT64 GCC
         if: runner.os == 'Windows'
         id: msys2
