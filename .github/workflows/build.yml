@@ -91,6 +91,42 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+  web:
+    name: WebAssembly
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build web package without a ROM
+        run: python3 web/build.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Smoke test web package
+        run: |
+          node --check dist/web/play.js
+          node --check dist/web/input.mjs
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          const wasm = await readFile('dist/web/advance_liberty_web.wasm');
+          const { instance } = await WebAssembly.instantiate(wasm, {
+            host: { now_ms: () => performance.now() },
+          });
+          const core = instance.exports;
+          assert.equal(core.start(), 0);
+          assert.equal(core.frame(0x3ff, 0, 0, 0), 0);
+          JS
+      - name: Upload web package
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: dist/web/
+          if-no-files-found: error
+          retention-days: 14
   release:
     name: Publish GitHub Release
     needs: build

@@ -247,6 +247,22 @@ pub extern "C" fn read32(m: *mut c_void, address: u32) -> u32 {
     crate::mouse_aim::read32(m, address)
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn observe_interpreted(machine: &mut Machine, key: u32) {
+    if machine.bus.pcm_overlay.is_none() {
+        return;
+    }
+    match key {
+        0x0803242f => prefix(&mut machine.bus, 0),
+        0x0803244f => prefix(&mut machine.bus, 2),
+        0x08032497 => prepare(&mut machine.bus),
+        0x08034d73 if machine.bus.ewram[0x1dc] != 0 => {
+            recover_weapon(&mut machine.bus, machine.cpu.regs[4], machine.cpu.regs[1]);
+        }
+        _ => (),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

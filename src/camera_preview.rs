@@ -1,6 +1,10 @@
 //! Opt-in presentation only. All observation borrows live state immutably.
 use crate::{building_material, building_projection, ground_projection, object_projection};
 use gba_core::{Machine, MemMap};
+#[cfg(target_arch = "wasm32")]
+use crate::BrowserInstant as Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 use std::{
     collections::{HashMap, VecDeque},
     io::Write,
@@ -439,7 +443,7 @@ impl Preview {
                     self.reject(m.bus.frames, "Scene changed during capture".into());
                     return;
                 }
-                let validation_start = std::time::Instant::now();
+                let validation_start = Instant::now();
                 p.observer.complete_wide();
                 for reason in p.observer.side_failures() {
                     self.event(m.bus.frames, "wide_object_failure", reason);
@@ -532,7 +536,7 @@ impl Preview {
                         if let Some(f) = self.sprite_anchors.as_mut() {
                             objects.trace_anchors(m.bus.frames, [0; 2], f);
                         }
-                        let graphics_start = std::time::Instant::now();
+                        let graphics_start = Instant::now();
                         let mut graphics = MemMap::new(Vec::new());
                         graphics.io.clone_from(&m.bus.io);
                         graphics.iwram.clone_from(&m.bus.iwram);
@@ -716,7 +720,7 @@ impl Preview {
         if self.status == "Original output selected" {
             self.status = "Camera preview: waiting";
         }
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         // Fade registers can update every GBA frame between scene uploads.
         // Update the presentation copy only; guest IO remains untouched.
         if let Some(scene) = self.current.as_mut() {
@@ -761,7 +765,7 @@ impl Preview {
                 ((old.camera[2] as f64 - scene.camera[2] as f64) * (1.0 - alpha)).round() as i32
             });
             let mut reset = false;
-            let geometry_start = std::time::Instant::now();
+            let geometry_start = Instant::now();
             let viewport = crate::viewport::View::new(3, settings.aspect);
             let constrain = |view: [i32; 3]| {
                 let Some(world) = scene.ground_world.as_ref() else { return view; };
@@ -841,7 +845,7 @@ impl Preview {
                     scene.camera[1]
                 );
             }
-            let compose_start = std::time::Instant::now();
+            let compose_start = Instant::now();
             let mut objects = if let Some(old) = old_scene {
                 scene.objects.interpolate_projected(
                     &old.objects,

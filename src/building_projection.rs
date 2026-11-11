@@ -19,7 +19,7 @@ pub(crate) struct WideWorker {
 }
 impl WideWorker {
     pub fn new() -> Option<Arc<Self>> {
-        if !std::thread::available_parallelism().is_ok_and(|n| n.get() >= 2) {
+        if cfg!(target_arch = "wasm32") || !std::thread::available_parallelism().is_ok_and(|n| n.get() >= 2) {
             return None;
         }
         let table = crate::RESCUE.with(|t| t.borrow().clone());

@@ -1,0 +1,14 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; }
+body { margin: 0; background: #141617; color: #f1f1ea; }
+main { max-width: 58rem; margin: 0 auto; padding: 1.5rem; }
+h1 { margin-top: 0; }
+canvas { width: 100%; max-height: 73vh; object-fit: contain; image-rendering: pixelated; background: black; }
+input, button { font: inherit; }
+button { padding: .35rem .8rem; }
+form label { display: block; margin-block: .6rem; }
+#controls label { display: inline-block; margin: .5rem 1rem .5rem 0; }
+#controls { max-width: min(44rem, 86vw); max-height: 82vh; overflow: auto; color: inherit; background: #1e2224; border: 1px solid #788183; }
+#controls::backdrop { background: rgb(0 0 0 / 66%); }
+#bindings { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .4rem; margin-bottom: .7rem; }
+#bindings button { text-align: left; }
+#game:fullscreen { background: #141617; overflow: auto; text-align: center; }

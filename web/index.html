@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AdvanceLiberty Web</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="play.js"></script>
+</head>
+<body>
+  <main>
+    <h1>AdvanceLiberty Web</h1>
+    <form id="launch">
+      <p>Choose your own unmodified USA ROM. The browser reads it locally.</p>
+      <label>ROM <input id="rom" type="file" accept=".gba" required></label>
+      <label>Translations (optional) <input id="packs" type="file" accept=".json" multiple></label>
+      <label><input id="enhanced-audio" type="checkbox" checked> Enhanced Audio</label>
+      <button id="start">Play</button>
+    </form>
+    <section id="game">
+    <p id="status" role="status"></p>
+    <canvas id="screen" width="240" height="160" tabindex="0" aria-label="Game screen" hidden></canvas>
+    <div id="toolbar" hidden>
+      <button type="button" id="pause">Pause / Settings</button>
+      <button type="button" id="fullscreen">Fullscreen</button>
+      <span id="controller" role="status"></span>
+    </div>
+    <dialog id="controls" aria-labelledby="pause-title">
+      <h2 id="pause-title">Paused</h2>
+      <button type="button" id="resume" autofocus>Resume</button>
+      <label>Volume <input id="volume" type="range" min="0" max="100" value="70"></label>
+      <label>Language <select id="language"><option value="">Original game</option></select></label>
+      <label>Controls <select id="input-mode"><option value="enhanced">Enhanced</option><option value="classic">Classic</option></select></label>
+      <label>Graphics <select id="graphics"><option value="wide">Enhanced 16:9</option><option value="standard">Enhanced 3:2</option><option value="original">Original</option></select></label>
+      <label>Textures <select id="textures"><option value="perspective">Perspective</option><option value="affine">Affine</option></select></label>
+      <label>HUD size <select id="hud"><option>50</option><option>65</option><option selected>75</option><option>85</option><option>100</option></select>%</label>
+      <details>
+        <summary>Keyboard and mouse bindings</summary>
+        <label>Profile <select id="binding-profile">
+          <option value="classic">Classic / menus</option><option value="foot">On foot</option>
+          <option value="vehicle">Vehicle</option><option value="shortcuts">Shortcuts</option>
+        </select></label>
+        <p id="binding-status" role="status"></p>
+        <div id="bindings"></div>
+        <button type="button" id="reset-bindings">Reset this profile</button>
+      </details>
+      <p>Escape pauses the browser game. A standard gamepad uses the original GBA layout.</p>
+      <p>Use the in-game save menu to save progress in this browser.</p>
+    </dialog>
+    </section>
+  </main>
+</body>
+</html>

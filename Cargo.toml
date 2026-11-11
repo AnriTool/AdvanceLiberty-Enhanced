@@ -1,6 +1,6 @@
 [package]
 name = "advance-liberty"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 publish = false
 license = "MIT"
@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [workspace]
 resolver = "2"
-members = ["tools/aot", "vendor/armv4t", "vendor/gba-core", "vendor/recomp-core"]
+members = ["tools/aot", "vendor/armv4t", "vendor/gba-core", "vendor/recomp-core", "web/runtime"]
 default-members = [".", "tools/aot"]
 
 [workspace.package]

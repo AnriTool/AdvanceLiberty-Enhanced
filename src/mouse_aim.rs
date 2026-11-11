@@ -151,6 +151,20 @@ pub extern "C" fn read16(ptr: *mut c_void, address: u32) -> u32 {
     let m = unsafe { &*(ptr as *const Machine) };
     override_angle(&m.bus, m.cpu.regs[15], address, 2).unwrap_or(value)
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn interpreted_load(m: &Machine) -> Option<(usize, u32)> {
+    let pc = m.cpu.regs[15];
+    let (destination, address, width) = match pc {
+        0x08018bb8 => (5, m.cpu.regs[0].wrapping_add(12), 4),
+        0x0801453e => (0, m.cpu.regs[0], 4),
+        0x08024a24 | 0x08024c26 | 0x080270bc => (0, m.cpu.regs[0].wrapping_add(12), 4),
+        0x08025516 => (2, m.cpu.regs[0].wrapping_add(12), 4),
+        0x08025576 => (0, m.cpu.regs[0].wrapping_add(m.cpu.regs[2]), 2),
+        _ => return None,
+    };
+    override_angle(&m.bus, pc, address, width).map(|value| (destination, value))
+}
 pub extern "C" fn read32(ptr: *mut c_void, address: u32) -> u32 {
     let value = (RT_API.read32)(ptr, address);
     let m = unsafe { &*(ptr as *const Machine) };

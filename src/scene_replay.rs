@@ -26,6 +26,12 @@ fn service(m: &Machine) -> bool {
         || (m.bus.irq_pending() && !m.cpu.flag(gba_core::cpu::FLAG_I))
 }
 fn step(m: &mut Machine, api: &RtApi, table: &HashMap<u32, Vec<BlockFn>>) -> Result<(), String> {
+    if cfg!(target_arch = "wasm32") {
+        // The browser has no DLL profiles. The fork still has its own state
+        // and the callers below enforce the same instruction budgets.
+        m.step();
+        return Ok(());
+    }
     if service(m) {
         if m.bus.halted
             && m.bus.irq_line()

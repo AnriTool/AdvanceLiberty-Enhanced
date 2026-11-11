@@ -72,6 +72,11 @@ impl Machine {
 
     /// Execute one instruction (or service interrupt machinery).
     pub fn step(&mut self) -> StepEvent {
+        self.step_with(|_| {})
+    }
+
+    /// Run a host hook immediately before executing an instruction.
+    pub fn step_with(&mut self, before_instruction: impl FnOnce(&mut Self)) -> StepEvent {
         // Wake from Halt when any enabled interrupt is latched (IME ignored).
         if self.bus.halted {
             if self.bus.irq_line() {
@@ -124,6 +129,7 @@ impl Machine {
             }
         }
 
+        before_instruction(self);
         let region = (self.cpu.regs[15] >> 24) as usize & 0xF;
         let instr = if self.bus.real_bios {
             exec::step_cached(&mut self.cpu, &mut self.bus, &mut self.decode_cache)

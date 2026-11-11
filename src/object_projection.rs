@@ -1020,7 +1020,12 @@ fn benchmark_captured_composition() {
             3,
             1.03,
         );
-        hash = crate::hash(std::hint::black_box(&frame));
+        hash = std::hint::black_box(&frame)
+            .iter()
+            .flat_map(|pixel| pixel.to_le_bytes())
+            .fold(0xcbf29ce484222325u64, |h, byte| {
+                (h ^ u64::from(byte)).wrapping_mul(0x1_0000_01b3)
+            });
     }
     println!(
         "compose_bench scene={stem} ms={:.3} hash={hash:016x}",

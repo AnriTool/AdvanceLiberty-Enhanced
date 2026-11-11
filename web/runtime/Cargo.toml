@@ -1,0 +1,15 @@
+[package]
+name = "advance-liberty-web"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+gba-core = { path = "../../vendor/gba-core" }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
